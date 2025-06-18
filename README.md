@@ -1,4 +1,4 @@
-#ProFileViewer - Polysome Profiling Data Viewer and Analysis Tool
+## ProFileViewer - Polysome Profiling Data Viewer and Analysis Tool
 
 ## Overview
 ProFileViewer is a MATLAB application for viewing and analyzing polysome profiling data. This tool provides an interactive interface for examining absorbance and fluorescence data from polysome profiles, with features for data comparison, area under the curve (AUC) measurement, and relative abundance calculations.
