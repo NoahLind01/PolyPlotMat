@@ -1,4 +1,4 @@
-classdef ProFileViewer_V3 < matlab.apps.AppBase
+classdef ProFileViewer_V5 < matlab.apps.AppBase
 
     % Properties that correspond to app components
     properties (Access = public)
@@ -68,419 +68,802 @@ classdef ProFileViewer_V3 < matlab.apps.AppBase
 
     
     properties (Access = private)
-        %currDir % current directory of the system as set by the user
-        workspace = {};     % Cell array to store trimmed data tables
-        currFile            % trimmed file to work with
-        currFilePath        % current file path
-        selectedPoints = [] % array of all the points selected (why is this global)?
-        AUCValues = []
-        RelativeAbundanceValues = []
-        highlightPatch
+    % Data storage and state management
+    workspace = {};           % Cell array to store trimmed data tables
+    currFile                  % Current trimmed file data
+    currFilePath              % Path to current file
+    
+    % Analysis properties
+    selectedPoints = []       % Points selected for AUC calculation
+    AUCValues = []            % Area under curve values for selected regions
+    RelativeAbundanceValues = [] % Calculated relative abundance percentages
+    highlightPatch            % Reference to visualization highlighting
+end
 
+methods (Access = private)
+    %% File and Directory Management
+    
+    function listing = changeDirectory(~, shouldChange)
+        % Changes working directory and returns CSV files in the directory
+        % 
+        % Parameters:
+        %   shouldChange - Boolean indicating whether to prompt for directory change
+        %
+        % Returns:
+        %   listing - Cell array of CSV filenames in the directory
+        
+        if shouldChange
+            newDir = uigetdir;
+            if newDir ~= 0  % User didn't cancel
+                cd(newDir);
+            end
+        end
+        
+        dirStruct = dir('*.csv');
+        listing = {dirStruct.name};
     end
     
-    methods (Access = private)
-
-        % change directory to where user specifies, lists compatible files
-        function listing = changeDirectory(~,changeDirectory)
+    function trimmedFile = trimFile(~, inputFile)
+        % Reads CSV file and trims to relevant data rows
+        %
+        % Parameters:
+        %   inputFile - Path to CSV file
+        %
+        % Returns:
+        %   trimmedFile - MATLAB table with relevant data
+        
+        data = readtable(inputFile);
+        startRow = find(strcmp(data.Properties.VariableNames, 'SampleA'));
+        
+        if ~isempty(startRow)
+            trimmedFile = data(startRow:end, :);
+        else
+            trimmedFile = data;
+        end
+    end
+    
+    %% Plotting and Visualization
+    
+    function newAxis = autoScalePlot(~, xData, yData)
+        % Calculates optimal Y-axis limits for plot based on data
+        %
+        % Parameters:
+        %   xData - X coordinates of data
+        %   yData - Y coordinates of data
+        %
+        % Returns:
+        %   newAxis - 2-element vector [yMin, yMax] for Y-axis limits
+        
+        if isempty(xData) || isempty(yData)
+            newAxis = [0, 1];
+            return;
+        end
+        
+        % Focus on right 60% of data for auto-scaling
+        xThreshold = 0.4 * max(xData);
+        validIndices = xData >= xThreshold & xData <= max(xData);
+        
+        if ~any(validIndices)
+            newAxis = [min(yData), max(yData)];
+        else
+            yInRange = yData(validIndices);
+            yMax = max(yInRange);
+            yMin = min(yInRange);
             
-            if changeDirectory % if change directory is true
-                % change to new chosen directory
-                cd(uigetdir)
+            % Add some padding to make plot look better
+            newYMax = 1.25 * yMax;
+            newYMin = min(0, yMin * 1.1);  % Ensure negative values are visible
+            newAxis = [newYMin, newYMax];
+        end
+    end
+    
+    function plotMain(app, selectedFile, channel, isFilePath)
+        % Plots data on the main panel
+        %
+        % Parameters:
+        %   selectedFile - File name or data to plot
+        %   channel - Channel name to plot (or "Default" to auto-select)
+        %   isFilePath - Boolean indicating if selectedFile is a path
+        
+        % Load file data if needed
+        if isFilePath
+            app.currFilePath = fullfile(selectedFile);
+            app.currFile = app.trimFile(app.currFilePath);
+        else
+            app.currFile = selectedFile;
+        end
+        
+        % Update available channels in dropdown
+        app.ChannelDropDown.Items = app.currFile.Properties.VariableNames;
+        
+        % Select appropriate channel if default requested
+        if strcmp(channel, "Default")
+            channel = app.getDefaultChannel(app.ChannelDropDown.Items, {'AbsA', 'Absorbance'});
+        end
+        app.ChannelDropDown.Value = channel;
+        
+        % Get x-axis data
+        x = app.getPositionData(app.currFile);
+        
+        % Extract y-axis data for selected channel
+        y = app.currFile.(channel);
+        
+        % Plot the data
+        plot(app.MainPanelPlot, x, y, '-k');
+        
+        % Set axis labels and title
+        xlabel(app.MainPanelPlot, 'Distance');
+        ylabel(app.MainPanelPlot, channel);
+        title(app.MainPanelPlot, ['Data from ', strrep(app.currFilePath, '_', ' ')]);
+        
+        % Apply autoscaling if enabled
+        if strcmp(app.AutoscaleSwitch.Value, "On")
+            newAxis = app.autoScalePlot(x, y);
+            app.MainPanelPlot.YLim = newAxis;
+        end
+    end
+    
+    function plotComparisonFiles(app, indices, channels)
+        % Plots multiple files for comparison on the comparison panel
+        %
+        % Parameters:
+        %   indices - Cell array of file names to plot
+        %   channels - Channel to plot
+        
+        % Reset plot and prepare for multi-plotting
+        cla(app.CompPlotPanel, 'reset');
+        hold(app.CompPlotPanel, 'on');
+        yyaxis(app.CompPlotPanel, 'left');
+        
+        legendItems = {};
+        y_all = [];
+        
+        % Plot each selected file
+        for i = 1:length(indices)
+            % Find file in workspace
+            index = find(strcmp(app.workspace(:,1), [indices{i}, '.csv']));
+            if isempty(index), continue; end
+            
+            data = app.workspace{index, 2};
+            
+            % Get position data
+            try
+                x = app.getPositionData(data);
+            catch
+                continue;
             end
             
-            % return directory structure of csv files
-            dirStruct = dir('*.csv');
-            listing = {dirStruct.name};
-
+            % Get appropriate y data based on channel type
+            try
+                y = app.getChannelData(data, channels);
+                if isempty(y), continue; end
+            catch
+                continue;
+            end
+            
+            % Plot on appropriate axis based on channel type
+            app.plotOnAppropriateAxis(app.CompPlotPanel, channels, x, y);
+            
+            % Add to legend and collect y values for scaling
+            legendItems{end+1} = strrep(indices{i}, '_', ' ');
+            y_all = [y_all; y];
         end
-
-
-        % determine where to start in the files, trim data from sel csv
-        function trimmedFile = trimFile(~, inputFile)
-            % disp(inputFile) % debug
-            data = readtable(inputFile);
-            startRow = find(strcmp(data.Properties.VariableNames, 'SampleA'));
-            if ~isempty(startRow)
-                trimmedFile = data(startRow:end, :);
+        
+        % Apply autoscaling or manual limits
+        app.applyAxisLimits(app.CompPlotPanel, x, y_all);
+        
+        % Set up plot formatting
+        app.formatComparisonPlot(app.CompPlotPanel, channels, legendItems);
+    end
+    
+    function plotWorkspaceFiles(app, selectedFile, channel, plotName)
+        % Plots data from workspace on the analysis panel
+        %
+        % Parameters:
+        %   selectedFile - Data table to plot
+        %   channel - Channel name to plot
+        %   plotName - Name to show in plot title
+        
+        % Update channel dropdown with available channels
+        availableChannels = selectedFile.Properties.VariableNames;
+        app.ChannelDropDown_2.Items = availableChannels;
+        
+        % Select appropriate channel if default requested
+        if strcmp(channel, "Default")
+            channel = app.getDefaultChannel(availableChannels, {'AbsA', 'Absorbance'});
+        end
+        
+        % Verify that the selected channel exists in the dropdown items
+        % and if not, select the first available channel
+        if ~ismember(channel, availableChannels)
+            fprintf('Warning: Selected channel "%s" not found in dataset. Using first available channel.\n', channel);
+            if ~isempty(availableChannels)
+                channel = availableChannels{1};
             else
-                trimmedFile = data;
+                error('No channels available in the data');
             end
         end
-
-
-        % set the plot entered to autoscale when called
-        function newAxis = autoScalePlot(~, xData, yData)
-            if isempty(xData) || isempty(yData)
-                newAxis = [0, 1];
+        
+        % Set dropdown value to the validated channel
+        app.ChannelDropDown_2.Value = channel;
+        
+        % Get position data for x-axis
+        try
+            x = app.getPositionData(selectedFile);
+        catch e
+            errordlg(['Error getting position data: ', e.message], 'Data Error');
+            return;
+        end
+        
+        % Get y-axis data
+        y = selectedFile.(channel);
+        
+        % Plot the data
+        plot(app.APPlot, x, y, '-k');
+        
+        % Set labels and title
+        xlabel(app.APPlot, 'Distance');
+        ylabel(app.APPlot, channel);
+        title(app.APPlot, ['Data from ', strrep(plotName, '_', ' ')]);
+        
+        % Apply autoscaling if enabled
+        if strcmp(app.AutoscaleSwitch.Value, "On")
+            newAxis = app.autoScalePlot(x,y);
+            app.APPlot.YLim = newAxis;
+        end
+    end
+    
+    %% Analysis Methods
+    
+    function selectPointsOnPlot(app, ~, ~)
+        % Enables point selection on the analysis plot
+        
+        [x, y] = getpts(app.APPlot);
+        app.selectedPoints = [x, y];
+        
+        % Mark selected points on the plot
+        hold(app.APPlot, 'on');
+        plot(app.APPlot, x, y, 'ro', 'MarkerSize', 10);
+        hold(app.APPlot, 'off');
+    end
+    
+    function calculateAreaUnderCurve(app)
+        % Calculates area under curve for absorbance and all fluorescence channels
+        
+        if numel(app.selectedPoints) < 2
+            warndlg('Please select at least two points.', 'Warning');
+            return;
+        end
+        
+        x_selected = app.selectedPoints(:,1);
+        
+        % Get the current file data from workspace
+        value = app.APWorkspaceDropDown.Value;
+        if strcmp(value, "No Data")
+            warndlg('No data selected for analysis.', 'Warning');
+            return;
+        end
+        
+        selectedIndex = find(strcmp(app.workspace(:,1), [value, '.csv']));
+        if isempty(selectedIndex)
+            warndlg('Selected file not found in workspace.', 'Warning');
+            return;
+        end
+        
+        selectedFile = app.workspace{selectedIndex, 2};
+        
+        % Get position data for analysis
+        try
+            x_data = app.getPositionData(selectedFile);
+        catch
+            warndlg('Could not find position data.', 'Warning');
+            return;
+        end
+        
+        % Find absorbance channel
+        absChannel = '';
+        if ismember('AbsA', selectedFile.Properties.VariableNames)
+            absChannel = 'AbsA';
+        elseif ismember('Absorbance', selectedFile.Properties.VariableNames)
+            absChannel = 'Absorbance';
+        end
+        
+        % Find all fluorescence channels
+        fluoroChannels = struct();
+        fluoroTypes = {'SampleFluorA', 'SampleFluorB', 'Fluorescence'};
+        
+        for i = 1:length(fluoroTypes)
+            if ismember(fluoroTypes{i}, selectedFile.Properties.VariableNames)
+                % Use the fluorescence type as a field name (sanitize if needed)
+                fieldName = strrep(fluoroTypes{i}, 'Sample', '');
+                fluoroChannels.(fieldName) = fluoroTypes{i};
+            end
+        end
+        
+        % Initialize results structure
+        app.AUCValues = struct('absorbance', []);
+        app.RelativeAbundanceValues = struct('absorbance', []);
+        
+        % Calculate AUC for absorbance if available
+        if ~isempty(absChannel)
+            absAUC = app.calculateChannelAUC(x_data, selectedFile.(absChannel), x_selected, false);
+            app.AUCValues.absorbance = absAUC;
+            fprintf('Absorbance AUC calculated from %s channel\n', absChannel);
+        end
+        
+        % Calculate AUC for each fluorescence channel
+        fluoroFields = fieldnames(fluoroChannels);
+        if ~isempty(fluoroFields)
+            for i = 1:length(fluoroFields)
+                fieldName = fluoroFields{i};
+                channelName = fluoroChannels.(fieldName);
+                
+                fluoroAUC = app.calculateChannelAUC(x_data, selectedFile.(channelName), x_selected, app.AllFluoroSwitch.Value == "On");
+                app.AUCValues.(fieldName) = fluoroAUC;
+                fprintf('Fluorescence AUC calculated from %s channel\n', channelName);
+            end
+        end
+        
+        % Build result text
+        resultParts = {};
+        
+        % Add absorbance result if available
+        if ~isempty(absChannel) && isfield(app.AUCValues, 'absorbance') && ~isempty(app.AUCValues.absorbance)
+            absTotal = sum(app.AUCValues.absorbance);
+            resultParts{end+1} = sprintf('Abs: %.4f', absTotal);
+        end
+        
+        % Add each fluorescence channel result
+        for i = 1:length(fluoroFields)
+            fieldName = fluoroFields{i};
+            if isfield(app.AUCValues, fieldName) && ~isempty(app.AUCValues.(fieldName))
+                fluoroTotal = sum(app.AUCValues.(fieldName));
+                resultParts{end+1} = sprintf('%s: %.4f', fieldName, fluoroTotal);
+            end
+        end
+        
+        % Combine all results
+        app.AUCResult.Text = strjoin(resultParts, ' | ');
+        
+        % Calculate relative abundances
+        app.calculateRelativeAbundance();
+        
+        % Update table with all values
+        app.updateAPTable();
+        
+        % Highlight the selected region
+        app.highlightSelectedRegion();
+    end
+    
+    function calculateRelativeAbundance(app)
+        % Calculates relative percentage of each segment for all channels
+        
+        if isempty(app.AUCValues)
+            warndlg('Please calculate AUC first.', 'Warning');
+            return;
+        end
+        
+        % Get all field names from AUCValues
+        channelFields = fieldnames(app.AUCValues);
+        
+        % Calculate relative abundance for each channel
+        for i = 1:length(channelFields)
+            fieldName = channelFields{i};
+            
+            if isfield(app.AUCValues, fieldName) && ~isempty(app.AUCValues.(fieldName))
+                channelAUC = app.AUCValues.(fieldName);
+                totalChannelAUC = sum(channelAUC);
+                
+                if totalChannelAUC <= 0 || isnan(totalChannelAUC)
+                    app.RelativeAbundanceValues.(fieldName) = [];
+                    fprintf('Cannot calculate %s relative abundance - invalid total\n', fieldName);
+                else
+                    app.RelativeAbundanceValues.(fieldName) = (channelAUC ./ totalChannelAUC) * 100;
+                    fprintf('%s relative abundances calculated\n', fieldName);
+                end
+            end
+        end
+    end
+    
+    function highlightSelectedRegion(app)
+        % Highlights the region between selected points on the plot
+        
+        if numel(app.selectedPoints) < 2
+            return;
+        end
+        
+        x_selected = app.selectedPoints(:,1);
+        
+        % Get all lines from the plot (not just those without markers)
+        plotLines = findobj(app.APPlot, 'Type', 'line');
+        
+        % Filter to get only the main data line (typically without markers)
+        % but fall back to any line if needed
+        dataLine = [];
+        for i = 1:length(plotLines)
+            if strcmp(plotLines(i).Marker, 'none')
+                dataLine = plotLines(i);
+                break;
+            end
+        end
+        
+        % If we still don't have a data line, use the first line found
+        if isempty(dataLine) && ~isempty(plotLines)
+            dataLine = plotLines(1);
+        end
+        
+        if isempty(dataLine)
+            warning('No data line found to highlight');
+            return;
+        end
+        
+        % Safely extract plot data
+        try
+            xData = dataLine.XData;
+            yData = dataLine.YData;
+        catch e
+            warning('Could not access data from plot: %s', e.message);
+            return;
+        end
+        
+        % Find region boundaries
+        xMin = min(x_selected);
+        xMax = max(x_selected);
+        
+        % Find indices within the selection range
+        idx_within_range = find(xData >= xMin & xData <= xMax);
+        
+        if isempty(idx_within_range)
+            warning('No data points found within selected range');
+            return;
+        end
+        
+        idx_start = min(idx_within_range);
+        idx_end = max(idx_within_range);
+        
+        % Get data within selection range
+        x_highlight = xData(idx_start:idx_end);
+        y_highlight = yData(idx_start:idx_end);
+        
+        % Choose appropriate color based on current channel
+        currentChannel = app.ChannelDropDown_2.Value;
+        fluoroChannels = {'Fluorescence', 'SampleFluorA', 'SampleFluorB'};
+        isFluoroChannel = any(strcmp(currentChannel, fluoroChannels));
+        
+        if isFluoroChannel
+            highlightColor = [0.2, 0.6, 0.8];  % Blue for fluorescence
+            alpha = 0.25;
+        else
+            highlightColor = [0.8, 0.2, 0.2];  % Red for absorbance
+            alpha = 0.3;
+        end
+        
+        y_min = min(min(yData), 0);
+        
+        % Create or update highlight patch
+        hold(app.APPlot, 'on');
+        if isfield(app, 'highlightPatch') && isgraphics(app.highlightPatch)
+            delete(app.highlightPatch);
+        end
+        
+        try
+            app.highlightPatch = fill(app.APPlot, ...
+                [x_highlight; flipud(x_highlight)], ...
+                [y_highlight; repmat(y_min, size(y_highlight))], ...
+                highlightColor, 'FaceAlpha', alpha);
+            
+            % Add vertical lines at selected points
+            for i = 1:length(x_selected)
+                line(app.APPlot, [x_selected(i), x_selected(i)], app.APPlot.YLim, ...
+                    'Color', [0.5, 0.5, 0.5], 'LineStyle', '--', 'LineWidth', 1);
+            end
+        catch e
+            warning('Error creating highlight patch: %s', e.message);
+        end
+        
+        hold(app.APPlot, 'off');
+    end
+    
+    function updateAPTable(app)
+        % Updates the analysis table with AUC and relative abundance for all channels
+        
+        if isempty(app.AUCValues)
+            return;
+        end
+        
+        % Get all channel fields
+        channelFields = fieldnames(app.AUCValues);
+        if isempty(channelFields)
+            return;
+        end
+        
+        % Determine max number of segments across all channels
+        numSegments = 0;
+        for i = 1:length(channelFields)
+            fieldName = channelFields{i};
+            if isfield(app.AUCValues, fieldName) && ~isempty(app.AUCValues.(fieldName))
+                numSegments = max(numSegments, length(app.AUCValues.(fieldName)));
+            end
+        end
+        
+        if numSegments == 0
+            return;
+        end
+        
+        % Create segment numbers
+        segmentNumbers = (1:numSegments)';
+        
+        % Initialize data cell array
+        data = num2cell(segmentNumbers);
+        columnNames = {'Segment'};
+        
+        % Add data for each channel (AUC and relative abundance)
+        for i = 1:length(channelFields)
+            fieldName = channelFields{i};
+            
+            if isfield(app.AUCValues, fieldName) && ~isempty(app.AUCValues.(fieldName))
+                % Prepare AUC values
+                channelAUC = nan(numSegments, 1);
+                aucLength = length(app.AUCValues.(fieldName));
+                channelAUC(1:aucLength) = app.AUCValues.(fieldName)';
+                
+                % Add AUC column
+                data = [data, num2cell(channelAUC)];
+                
+                % Create appropriate column name based on channel
+                if strcmp(fieldName, 'absorbance')
+                    columnNames{end+1} = 'Abs AUC';
+                else
+                    columnNames{end+1} = [fieldName ' AUC'];
+                end
+                
+                % Prepare relative abundance values if available
+                if isfield(app.RelativeAbundanceValues, fieldName) && ~isempty(app.RelativeAbundanceValues.(fieldName))
+                    relAbValues = nan(numSegments, 1);
+                    relAbLength = length(app.RelativeAbundanceValues.(fieldName));
+                    relAbValues(1:relAbLength) = app.RelativeAbundanceValues.(fieldName)';
+                    
+                    % Add relative abundance column
+                    data = [data, num2cell(relAbValues)];
+                    
+                    % Create appropriate column name
+                    if strcmp(fieldName, 'absorbance')
+                        columnNames{end+1} = 'Abs %';
+                    else
+                        columnNames{end+1} = [fieldName ' %'];
+                    end
+                end
+            end
+        end
+        
+        % Update table
+        app.APTable.Data = data;
+        app.APTable.ColumnName = columnNames;
+    end
+    
+    %% Utility Methods
+    
+    function channel = getDefaultChannel(~, availableChannels, preferredChannels)
+        % Selects a default channel based on preferences
+        %
+        % Parameters:
+        %   availableChannels - List of available channels
+        %   preferredChannels - Ordered list of preferred channel names
+        %
+        % Returns:
+        %   channel - Selected channel name
+        
+        for i = 1:length(preferredChannels)
+            if any(strcmp(availableChannels, preferredChannels{i}))
+                channel = preferredChannels{i};
                 return;
             end
-
-            xRange = [0.4 * max(xData), max(xData)];
-            validIndices = find(xData >= xRange(1) & xData <= xRange(2));
-
-            if isempty(validIndices)
-                newAxis = [min(yData), max(yData)];
-            else
-                yInRange = yData(validIndices);
-                yMax = max(yInRange);
-                yMin = min(yInRange);
-                newYMax = 1.25 * yMax;
-                newYMin = min(0, yMin * 1.1);
-                newAxis = [newYMin, newYMax];
-            end
-        end
-
-        % plot current file from channel onto MainPanelPlot
-        function plotMain(app, selectedFile, channel, filepath)
-            % disp(pwd) % debug
-            if filepath
-                app.currFilePath = fullfile(selectedFile);
-                app.currFile = app.trimFile(app.currFilePath);
-            else
-                app.currFile = selectedFile;
-                % app.currFilePath = filepath;
-            end
-            % Update ChannelDropDown
-            columns = app.currFile.Properties.VariableNames;
-            app.ChannelDropDown.Items = columns;
-
-            % handle incoming default plotting y-axis
-            if channel == "Default"
-                if any(strcmp(app.ChannelDropDown.Items, 'AbsA'))
-                    channel = 'AbsA';
-                elseif any(strcmp(app.ChannelDropDown.Items, 'Absorbance'))
-                    channel = 'Absorbance';
-                else
-                    channel = app.ChannelDropDown.Items{1}; % Default to first item if neither found
-                end
-            end
-            app.ChannelDropDown.Value = channel;
-
-            % handle incoming default plotting x-axis
-            if ismember('Position', app.currFile.Properties.VariableNames)
-                x = app.currFile.Position;
-            elseif ismember('Position_mm_', app.currFile.Properties.VariableNames)
-                x = app.currFile.("Position_mm_");
-            else
-                error('Position column not found in the data');
-            end
-
-            % Extract relevant columns
-            y = app.currFile.(channel);
-            
-            
-            % Plot the data
-            plot(app.MainPanelPlot, x, y, '-k');
-            xlabel(app.MainPanelPlot, 'Distance');
-            ylabel(app.MainPanelPlot, app.ChannelDropDown.Value);
-            % disp(app.currFilePath)
-            title(app.MainPanelPlot, ['Data from ', strrep(app.currFilePath, '_', ' ')]);
-            %title(app.MainPanelPlot, ['Data from ', strrep(indices{i}, '_', ' ')]);
-
-            % if autoscale is on, apply new autoscaled axis
-            if app.AutoscaleSwitch.Value == "On"
-                newAxis = app.autoScalePlot(x,y);
-                app.MainPanelPlot.YLim = [newAxis(1), newAxis(2)];
-            end
         end
         
-        % plot multiple graphs onto CompPlotPanel
-        function plotComparisonFiles(app, indices, channels)
-            cla(app.CompPlotPanel, 'reset');
-            hold(app.CompPlotPanel, 'on');
-            yyaxis(app.CompPlotPanel, 'left');
-        
-            legendItems = {};
-            y_all = [];
-            for i = 1:length(indices)
-                index = find(strcmp(app.workspace(:,1), [indices{i}, '.csv']));
-                if ~isempty(index)
-                    data = app.workspace{index, 2};
-                    if ismember('Position', data.Properties.VariableNames)
-                        x = data.Position;
-                    elseif ismember('Position_mm_', data.Properties.VariableNames)
-                        x = data.("Position_mm_");
-                    else
-                        continue;
-                    end
-
-                    if strcmp(channels, 'Absorbance')
-                        if ismember('Absorbance', data.Properties.VariableNames)
-                            y = data.Absorbance;
-                        elseif ismember('AbsA', data.Properties.VariableNames)
-                            y = data.AbsA;
-                        else
-                            continue;
-                        end
-                    elseif strcmp(channels, 'Fluorescence')
-                        if ismember('Fluorescence', data.Properties.VariableNames)
-                            y = data.Fluorescence;
-                        elseif ismember('SampleFluorA', data.Properties.VariableNames)
-                            y = data.SampleFluorA;
-                        else
-                            continue;
-                        end
-                    elseif strcmp(channels, 'SampleFluorB')
-                        if ismember('SampleFluorB', data.Properties.VariableNames)
-                            y = data.SampleFluorB;
-                        else
-                            continue;
-                        end
-                    else
-                        continue;
-                    end
-
-                    if any(strcmp(channels, {'Fluorescence', 'SampleFluorB', 'SampleFluorA'}))
-                        yyaxis(app.CompPlotPanel, 'right');
-                        plot(app.CompPlotPanel, x, y, '-');
-                    else
-                        yyaxis(app.CompPlotPanel, 'left');
-                        plot(app.CompPlotPanel, x, y, '-');
-                    end
-                    legendItems{end+1} = [strrep(indices{i}, '_', ' ')];
-                    y_all = [y_all; y];
-                end
-            end
-
-            % After plotting all data, before setting labels
-            if app.AutoscaleSwitch_2.Value == "On"
-                newAxis = app.autoScalePlot(x, y_all); % Assumes x and y from last plotted data
-                app.CompPlotPanel.YLim = newAxis;
-            else
-                minY = app.Y2MinEditField.Value;
-                maxY = app.Y2MaxEditField.Value;
-                if ~isnan(minY) && ~isnan(maxY) && minY < maxY
-                    app.CompPlotPanel.YLim = [minY, maxY];
-                end
-            end
-
-            % axis components
-            hold(app.CompPlotPanel, 'off');
-            xlabel(app.CompPlotPanel, 'Position');
-            yyaxis(app.CompPlotPanel, 'left');
-            ylabel(app.CompPlotPanel, 'Absorbance 260 nm');
-
-            % conditionally show the yyaxis Fluorescence (AU)
-            fluorChannels = {'SampleFluorA', 'SampleFluorB', 'SampleFluor', 'Fluorescence'};
-            if any(strcmp(app.CompChannelDropDown.Value, fluorChannels))
-                yyaxis(app.CompPlotPanel, 'right');
-                ylabel(app.CompPlotPanel, 'Fluorescence (AU)');
-            else
-                yyaxis(app.CompPlotPanel, 'right');
-                ylabel(app.CompPlotPanel, '');
-            end
-
-            % set title for plot
-            title(app.CompPlotPanel, 'Comparison Plot');
-            % set title for legend
-            lgd = legend(app.CompPlotPanel, legendItems);
-            title(lgd, app.CompChannelDropDown.Value);
-            
-            % call this method with:
-            % indices = [1, 3, 5];
-            % channels = {'AbsA', 'SampleFluorA', 'AbsA'};
-            % app.plotComparisonFiles(indices, channels);
+        % If no preferred channel found, use first available
+        if ~isempty(availableChannels)
+            channel = availableChannels{1};
+        else
+            error('No channels available in data');
         end
-
-        % plot current file from channel onto MainPanelPlot
-        function plotWorkspaceFiles(app, selectedFile, channel, plotName)
-            
-            % Update ChannelDropDown
-            columns = selectedFile.Properties.VariableNames;
-            app.ChannelDropDown_2.Items = columns;
-
-            % disp(app.ChannelDropDown_2.Items)
-
-            % handle incoming default plotting y-axis
-            if channel == "Default"
-                if any(strcmp(app.ChannelDropDown_2.Items, 'AbsA'))
-                    channel = 'AbsA';
-                elseif any(strcmp(app.ChannelDropDown_2.Items, 'Absorbance'))
-                    channel = 'Absorbance';
-                % else
-                    % channel = app.ChannelDropDown_2.Items{1}; % Default to first item if neither found
-                end
-            end
-            % disp(channel)
-            app.ChannelDropDown_2.Value = channel;
-            % disp(app.ChannelDropDown_2.Items)
-
-            % handle incoming default plotting x-axis
-            if ismember('Position', selectedFile.Properties.VariableNames)
-                x = selectedFile.Position;
-            elseif ismember('Position_mm_', selectedFile.Properties.VariableNames)
-                x = selectedFile.("Position_mm_");
-            else
-                error('Position column not found in the data');
-            end
-
-            % Extract relevant columns
-            y = selectedFile.(channel);
-            
-            
-            % Plot the data
-            plot(app.APPlot, x, y, '-k');
-            xlabel(app.APPlot, 'Distance');
-            ylabel(app.APPlot, channel);
-            % disp(app.currFilePath)
-            title(app.APPlot, ['Data from ', strrep(plotName, '_', ' ')]);
-            %title(app.MainPanelPlot, ['Data from ', strrep(indices{i}, '_', ' ')]);
-
-            % if autoscale is on, apply new autoscaled axis
-            if app.AutoscaleSwitch.Value == "On"
-                newAxis = app.autoScalePlot(x,y);
-                app.APPlot.YLim = [newAxis(1), newAxis(2)];
-            end
-        end
-
-
-% select points for AUC        
-        function selectPointsOnPlot(app, ~, ~)
-            [x, y] = getpts(app.APPlot);
-            app.selectedPoints = [x, y];
-            hold(app.APPlot, 'on');
-            plot(app.APPlot, x, y, 'ro', 'MarkerSize', 10);
-            hold(app.APPlot, 'off');
-        end
-
-
-
-function calculateAreaUnderCurve(app)
-    if numel(app.selectedPoints) < 2
-        warndlg('Please select at least two points.', 'Warning');
-        return;
     end
     
-    x = app.selectedPoints(:,1);
+    function positionData = getPositionData(~, dataTable)
+        % Extracts position data from table
+        %
+        % Parameters:
+        %   dataTable - Table containing data
+        %
+        % Returns:
+        %   positionData - Column vector with position values
+        
+        if ismember('Position', dataTable.Properties.VariableNames)
+            positionData = dataTable.Position;
+        elseif ismember('Position_mm_', dataTable.Properties.VariableNames)
+            positionData = dataTable.("Position_mm_");
+        else
+            error('Position column not found in the data');
+        end
+    end
     
-    % Get the plotted data
-    plotData = findobj(app.APPlot, 'Type', 'line', '-and', 'Marker', 'none');
-    if ~isempty(plotData)
-        xData = plotData.XData;
-        yData = plotData.YData;
-
-        % Set new zero if min y value is below 0
-        yMin = min(yData);
-        if yMin < 0
-            yData = yData - yMin;
+    function channelData = getChannelData(~, dataTable, channelType)
+        % Extracts channel data based on channel type
+        %
+        % Parameters:
+        %   dataTable - Table containing data
+        %   channelType - Type of channel to extract
+        %
+        % Returns:
+        %   channelData - Column vector with channel values
+        
+        if strcmp(channelType, 'Absorbance')
+            if ismember('Absorbance', dataTable.Properties.VariableNames)
+                channelData = dataTable.Absorbance;
+            elseif ismember('AbsA', dataTable.Properties.VariableNames)
+                channelData = dataTable.AbsA;
+            else
+                channelData = [];
+            end
+        elseif strcmp(channelType, 'Fluorescence')
+            if ismember('Fluorescence', dataTable.Properties.VariableNames)
+                channelData = dataTable.Fluorescence;
+            elseif ismember('SampleFluorA', dataTable.Properties.VariableNames)
+                channelData = dataTable.SampleFluorA;
+            else
+                channelData = [];
+            end
+        elseif strcmp(channelType, 'SampleFluorB')
+            if ismember('SampleFluorB', dataTable.Properties.VariableNames)
+                channelData = dataTable.SampleFluorB;
+            else
+                channelData = [];
+            end
+        else
+            % Try direct access
+            if ismember(channelType, dataTable.Properties.VariableNames)
+                channelData = dataTable.(channelType);
+            else
+                channelData = [];
+            end
+        end
+    end
+    
+    function plotOnAppropriateAxis(~, axesHandle, channelType, x, y)
+        % Plots data on appropriate y-axis based on channel type
+        %
+        % Parameters:
+        %   axesHandle - Handle to axes for plotting
+        %   channelType - Type of data to plot
+        %   x - X-axis data
+        %   y - Y-axis data
+        
+        fluorChannels = {'Fluorescence', 'SampleFluorB', 'SampleFluorA'};
+        if any(strcmp(channelType, fluorChannels))
+            yyaxis(axesHandle, 'right');
+        else
+            yyaxis(axesHandle, 'left');
+        end
+        plot(axesHandle, x, y, '-');
+    end
+    
+    function applyAxisLimits(app, axesHandle, x, y_all)
+        % Applies appropriate axis limits to the plot
+        %
+        % Parameters:
+        %   axesHandle - Handle to axes to adjust
+        %   x - X-axis data
+        %   y_all - All Y values for scaling
+        
+        if strcmp(app.AutoscaleSwitch_2.Value, "On")
+            newAxis = app.autoScalePlot(x, y_all);
+            axesHandle.YLim = newAxis;
+        else
+            minY = app.Y2MinEditField.Value;
+            maxY = app.Y2MaxEditField.Value;
+            if ~isnan(minY) && ~isnan(maxY) && minY < maxY
+                axesHandle.YLim = [minY, maxY];
+            end
+        end
+    end
+    
+    function formatComparisonPlot(~, axesHandle, channelType, legendItems)
+        % Formats the comparison plot with labels and legend
+        %
+        % Parameters:
+        %   axesHandle - Handle to axes to format
+        %   channelType - Type of data being plotted
+        %   legendItems - Items to include in legend
+        
+        hold(axesHandle, 'off');
+        xlabel(axesHandle, 'Position');
+        
+        yyaxis(axesHandle, 'left');
+        ylabel(axesHandle, 'Absorbance 260 nm');
+        
+        fluorChannels = {'SampleFluorA', 'SampleFluorB', 'SampleFluor', 'Fluorescence'};
+        yyaxis(axesHandle, 'right');
+        if any(strcmp(channelType, fluorChannels))
+            ylabel(axesHandle, 'Fluorescence (AU)');
+        else
+            ylabel(axesHandle, '');
         end
         
-        % Remove duplicate x values
+        title(axesHandle, 'Comparison Plot');
+        lgd = legend(axesHandle, legendItems);
+        title(lgd, channelType);
+    end
+    
+    function logAbundanceValues(~, aucValues, relAbundances, totalAUC)
+        % Logs AUC and relative abundance values to console
+        %
+        % Parameters:
+        %   aucValues - Array of AUC values
+        %   relAbundances - Array of relative abundance percentages
+        %   totalAUC - Total AUC value
+        
+        disp('AUC Values:');
+        disp(aucValues);
+        disp(['Total AUC: ', num2str(totalAUC)]);
+        
+        for i = 1:length(relAbundances)
+            fprintf('Segment %d Relative Abundance: %.2f%%\n', i, relAbundances(i));
+        end
+    end
+
+    function isFluorescenceChannel(~, channelName)
+        % Determines whether a channel is a fluorescence channel
+        %
+        % Parameters:
+        %   channelName - Name of the channel to check
+        %
+        % Returns:
+        %   isFluro - Boolean indicating if channel is a fluorescence channel
+        
+        fluoroChannels = {'Fluorescence', 'SampleFluorA', 'SampleFluorB'};
+        isFluoro = any(strcmp(channelName, fluoroChannels));
+    end
+
+    function aucValues = calculateChannelAUC(app, xData, yData, xSelected, applyBaselineCorrection)
+        % Helper method to calculate AUC for a specific channel
+        %
+        % Parameters:
+        %   xData - Full x-axis data
+        %   yData - Full y-axis data
+        %   xSelected - Selected x points for integration
+        %   applyBaselineCorrection - Whether to apply baseline correction
+        %
+        % Returns:
+        %   aucValues - Vector of AUC values for each segment
+    
+        % Clean data by removing duplicates
         [xData_unique, unique_indices] = unique(xData);
         yData_unique = yData(unique_indices);
         
+        % Adjust baseline if needed and requested
+        yMin = min(yData_unique);
+        if yMin < 0 && applyBaselineCorrection
+            yData_unique = yData_unique - yMin;
+            fprintf('Applied baseline correction: %f\n', yMin);
+        end
+        
         % Interpolate y values for selected x points
-        y = interp1(xData_unique, yData_unique, x, 'linear', 'extrap');
+        y_interp = interp1(xData_unique, yData_unique, xSelected, 'linear', 'extrap');
         
-        [x_sorted, sort_idx] = sort(x);
-        y_sorted = y(sort_idx);
+        % Sort points by x value to ensure correct segment calculation
+        [x_sorted, sort_idx] = sort(xSelected);
+        y_sorted = y_interp(sort_idx);
         
-        app.AUCValues = zeros(1, length(x_sorted)-1);
-        for i = 1:length(x_sorted)-1
+        % Calculate AUC for each segment
+        numSegments = length(x_sorted)-1;
+        aucValues = zeros(1, numSegments);
+        
+        for i = 1:numSegments
             segment_x = x_sorted(i:i+1);
             segment_y = y_sorted(i:i+1);
-            app.AUCValues(i) = trapz(segment_x, segment_y);
+            aucValues(i) = trapz(segment_x, segment_y);
         end
-        
-        total_auc = sum(app.AUCValues);
-        app.AUCResult.Text = sprintf('Total AUC: %.4f', total_auc);
-        
-        % Display individual segment AUCs
-        for i = 1:length(app.AUCValues)
-            fprintf('Segment %d AUC: %.4f\n', i, app.AUCValues(i));
-        end
-    else
-        warndlg('No plotted data found.', 'Warning');
     end
 end
-
-% determine relative % abundance per curve        
-        function calculateRelativeAbundance(app)
-            if isempty(app.AUCValues)
-                warndlg('Please calculate AUC first.', 'Warning');
-                return;
-            end
-            
-            % Removes the last element - I have NO idea why this works. Do
-            % not change it!!!
-            app.AUCValues(end) = [];
-            disp(app.AUCValues)
-
-
-            totalAUC = sum(app.AUCValues);
-            disp('AUC Values:');
-            disp(app.AUCValues);
-            disp(['Total AUC: ', num2str(totalAUC)]);
-            if totalAUC == 0 || isnan(totalAUC)
-                warndlg('Total AUC is zero or NaN. Cannot calculate relative abundances.', 'Warning');
-                return;
-            end
-
-            relativeAbundances = (app.AUCValues ./ totalAUC) * 100;
-            
-            for i = 1:length(relativeAbundances)
-                fprintf('Segment %d Relative Abundance: %.2f%%\n', i, relativeAbundances(i));
-            end
-            
-            app.RelativeAbundanceValues = relativeAbundances;
-        end
-
-        function highlightSelectedRegion(app)
-            if numel(app.selectedPoints) < 2
-                return;
-            end
-            
-            x_selected = app.selectedPoints(:,1);
-            
-            plotData = findobj(app.APPlot, 'Type', 'line', '-and', 'Marker', 'none');
-            if ~isempty(plotData)
-                xData = plotData.XData;
-                yData = plotData.YData;
-                
-                idx_start = find(xData >= min(x_selected), 1);
-                idx_end = find(xData <= max(x_selected), 1, 'last');
-                
-                x_highlight = xData(idx_start:idx_end);
-                y_highlight = yData(idx_start:idx_end);
-                
-                y_min = min(min(yData),0);
-                
-                hold(app.APPlot, 'on');
-                if isfield(app, 'highlightPatch') && isgraphics(app.highlightPatch)
-                    delete(app.highlightPatch);
-                end
-                app.highlightPatch = fill(app.APPlot, [x_highlight; flipud(x_highlight)], [y_highlight; repmat(y_min, size(y_highlight))], 'r', 'FaceAlpha', 0.3);
-                hold(app.APPlot, 'off');
-            end
-        end
-        
-        % a method to put the different segment AUCs into a MATLAB table object called app.APTable
-        function updateAPTable(app)
-            if isempty(app.AUCValues)
-                return;
-            end
-            
-            numSegments = length(app.AUCValues);
-            segmentNumbers = (1:numSegments)';
-            % segmentNumbers = round(segmentNumbers);
-            auc = app.AUCValues';
-            
-            if ~isempty(app.RelativeAbundanceValues)
-                relativeAbundance = app.RelativeAbundanceValues';
-                data = [num2cell(segmentNumbers), num2cell(auc), num2cell(relativeAbundance)];
-                columnNames = {'Segment', 'AUC', 'RelativeAbundance'};
-            else
-                data = [num2cell(segmentNumbers), num2cell(auc)];
-                columnNames = {'Segment', 'AUC'};
-            end
-            
-            app.APTable.Data = data;
-            app.APTable.ColumnName = columnNames;
-        end
-        
-
-    end
 
     % Callbacks that handle component events
     methods (Access = private)
@@ -495,6 +878,12 @@ end
                 app.MPDirectoryDropdown.Items = items;
             end
             
+            % Initialize data structures for dual-channel analysis
+            app.AUCValues = struct('absorbance', [], 'fluorescence', []);
+            app.RelativeAbundanceValues = struct('absorbance', [], 'fluorescence', []);
+            % Initialize data structures for multi-channel analysis
+            app.AUCValues = struct();
+            app.RelativeAbundanceValues = struct();
             
         end
 
@@ -924,10 +1313,19 @@ end
 
         % Button pushed function: CalculateAUCButton
         function CalculateAUCButtonPushed(app, event)
+            % Calculate AUC values
             calculateAreaUnderCurve(app);
+            
+            % Highlight the selected regions on the plot
             highlightSelectedRegion(app);
-            app.AUCValues(end+1) = str2double(app.AUCResult.Text(6:end));
+            
+            % No need for this line anymore as calculateAreaUnderCurve now directly updates app.AUCValues
+            % app.AUCValues(end+1) = str2double(app.AUCResult.Text(6:end)); 
+            
+            % Calculate relative abundance percentages
             calculateRelativeAbundance(app);
+            
+            % Update the table with the results
             updateAPTable(app);
         end
 
@@ -943,14 +1341,129 @@ end
             app.selectedPoints = [];
         end
         
-        % Remove point markers
-        delete(findobj(app.APPlot, 'Type', 'line', 'Marker', 'o'));
+        % Reset AUC values
+        app.AUCValues = struct();
+        app.RelativeAbundanceValues = struct();
         
-        % Reset any related displays or results
-        app.AUCResult.Text = 'AUC: ';
+        % Remove point markers and highlight lines
+        delete(findobj(app.APPlot, 'Type', 'line', 'Marker', 'o'));
+        delete(findobj(app.APPlot, 'LineStyle', '--'));
+        
+        % Reset result display
+        app.AUCResult.Text = 'AUC Results';
+        
+        % Clear table
+        app.APTable.Data = {};
+        app.APTable.ColumnName = {'Segment'};
         
         % Refresh the plot
         APWorkspaceDropDownValueChanged(app, event);
+        end
+
+        % Button pushed function: ExportCSVButton
+        function ExportCSVButtonPushed(app, event)
+        % Export AUC analysis results for all channels to CSV
+    
+        if isempty(app.APTable.Data)
+            warndlg('No data available to export.', 'Export Warning');
+            return;
+        end
+        
+        try
+            % Get the current workspace item name for use in the filename
+            currentFileName = app.APWorkspaceDropDown.Value;
+            if strcmp(currentFileName, 'No Data')
+                currentFileName = 'PolysomeData';
+            end
+            
+            % Get all analyzed channels
+            channelFields = fieldnames(app.AUCValues);
+            
+            % Create a default filename with timestamp
+            timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+            defaultFileName = [currentFileName, '_MultiChannel_Analysis_', timestamp, '.csv'];
+            
+            % Open save dialog
+            [fileName, filePath] = uiputfile({'*.csv', 'CSV Files (*.csv)'}, ...
+                'Save AUC Analysis Results', defaultFileName);
+            
+            % Check if user canceled the dialog
+            if isequal(fileName, 0) || isequal(filePath, 0)
+                return;
+            end
+            
+            % Get full file path
+            fullFilePath = fullfile(filePath, fileName);
+            
+            % Create a MATLAB table from the data
+            columnNames = app.APTable.ColumnName;
+            tableData = app.APTable.Data;
+            
+            % Convert cell array to table
+            T = cell2table(tableData, 'VariableNames', columnNames);
+            
+            % Add metadata
+            T.Properties.Description = 'Polysome Profile Multi-Channel AUC Analysis';
+            T.Properties.UserData.SourceFile = currentFileName;
+            T.Properties.UserData.AnalysisDate = timestamp;
+            T.Properties.UserData.Channels = channelFields;
+            
+            % Write table to CSV file
+            writetable(T, fullFilePath);
+            
+            % Add extra metadata to the file (at the top)
+            fileID = fopen(fullFilePath, 'r');
+            fileContents = fscanf(fileID, '%c', inf);
+            fclose(fileID);
+            
+            % Build header
+            header = sprintf(['# Polysome Profile Multi-Channel AUC Analysis\n', ...
+                '# Source: %s\n', ...
+                '# Date: %s\n'], ...
+                currentFileName, datestr(now));
+            
+            % Add channel-specific information
+            for i = 1:length(channelFields)
+                fieldName = channelFields{i};
+                
+                if isfield(app.AUCValues, fieldName) && ~isempty(app.AUCValues.(fieldName))
+                    if strcmp(fieldName, 'absorbance')
+                        header = sprintf('%s# Absorbance Channel: %s\n', header, 'AbsA/Absorbance');
+                        if isfield(app.AUCValues, fieldName)
+                            header = sprintf('%s# Total Absorbance AUC: %.4f\n', header, sum(app.AUCValues.(fieldName)));
+                        end
+                    else
+                        % For fluorescence channels
+                        header = sprintf('%s# %s Fluorescence Channel\n', header, fieldName);
+                        
+                        % Add baseline correction info if it's a fluorescence channel
+                        baselineStatus = 'Off';
+                        if app.AllFluoroSwitch.Value == "On"
+                            baselineStatus = 'On';
+                        end
+                        header = sprintf('%s#   Baseline Correction: %s\n', header, baselineStatus);
+                        
+                        if isfield(app.AUCValues, fieldName)
+                            header = sprintf('%s#   Total AUC: %.4f\n', header, sum(app.AUCValues.(fieldName)));
+                        end
+                    end
+                end
+            end
+            
+            header = sprintf('%s\n', header);
+            
+            % Write the file back with header
+            fileID = fopen(fullFilePath, 'w');
+            fprintf(fileID, '%s%s', header, fileContents);
+            fclose(fileID);
+            
+            % Show success message
+            msgbox(sprintf('Multi-channel data successfully exported to: %s', fullFilePath), 'Export Complete');
+        catch e
+            errordlg(['Error exporting data: ', e.message], 'Export Error');
+            disp(['Export error details: ' getReport(e)]);
+        end
+    
         end
     end
 
@@ -1314,6 +1827,7 @@ end
 
             % Create ExportCSVButton
             app.ExportCSVButton = uibutton(app.AnalysisPanel, 'push');
+            app.ExportCSVButton.ButtonPushedFcn = createCallbackFcn(app, @ExportCSVButtonPushed, true);
             app.ExportCSVButton.Position = [221 508 100 22];
             app.ExportCSVButton.Text = 'Export CSV';
 
@@ -1336,7 +1850,7 @@ end
     methods (Access = public)
 
         % Construct app
-        function app = ProFileViewer_V3
+        function app = ProFileViewer_V5
 
             % Create UIFigure and components
             createComponents(app)
