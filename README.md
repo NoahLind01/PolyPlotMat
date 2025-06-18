@@ -53,10 +53,4 @@ ProFileViewer is a MATLAB application for viewing and analyzing polysome profili
 
 ## Copyright and License
 This application is not for modification, sale, or distribution without express permission from the author.
-
-## Author
-Proprietary software - all rights reserved
-
----
-
-*Note: For technical support or to request permission for use beyond the standard license, please contact the author directly.*
+All rights reserved
