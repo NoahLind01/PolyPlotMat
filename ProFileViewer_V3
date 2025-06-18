@@ -1,0 +1,1362 @@
+classdef ProFileViewer_V3 < matlab.apps.AppBase
+
+    % Properties that correspond to app components
+    properties (Access = public)
+        UIFigureMain              matlab.ui.Figure
+        TabGroup                  matlab.ui.container.TabGroup
+        MainPanel                 matlab.ui.container.Tab
+        ColorPicker               matlab.ui.control.ColorPicker
+        ColorPickerLabel          matlab.ui.control.Label
+        AutoLoadWorkspace         matlab.ui.control.CheckBox
+        LoadAlltoWorkspaceButton  matlab.ui.control.Button
+        AutoscaleSwitch           matlab.ui.control.Switch
+        LoadfromWorkspaceButton   matlab.ui.control.Button
+        AutoScaleLabel            matlab.ui.control.Label
+        ClearWorkspaceButton      matlab.ui.control.Button
+        ClearfromWorkspaceButton  matlab.ui.control.Button
+        WorkspaceDropDown         matlab.ui.control.DropDown
+        WorkspaceDropDownLabel    matlab.ui.control.Label
+        LoadtoWorkspaceButton     matlab.ui.control.Button
+        MaxEditField              matlab.ui.control.NumericEditField
+        MaxEditFieldLabel         matlab.ui.control.Label
+        MinEditField              matlab.ui.control.NumericEditField
+        MinEditFieldLabel         matlab.ui.control.Label
+        ChannelDropDown           matlab.ui.control.DropDown
+        ChannelLabel              matlab.ui.control.Label
+        DirectoryFilesLabel       matlab.ui.control.Label
+        MPDirectoryDropdown       matlab.ui.control.DropDown
+        ChangeDirectoryButton     matlab.ui.control.Button
+        MainPanelPlot             matlab.ui.control.UIAxes
+        ComparisonPanel           matlab.ui.container.Tab
+        XMinEditField             matlab.ui.control.NumericEditField
+        XMinLabel                 matlab.ui.control.Label
+        CtrlclickLabel            matlab.ui.control.Label
+        ColorDropDown             matlab.ui.control.DropDown
+        Y1MaxEditField            matlab.ui.control.NumericEditField
+        Y1MaxEditFieldLabel       matlab.ui.control.Label
+        Y1MinEditField            matlab.ui.control.NumericEditField
+        Y1MinEditFieldLabel       matlab.ui.control.Label
+        Y2MaxEditField            matlab.ui.control.NumericEditField
+        Y2MaxEditFieldLabel       matlab.ui.control.Label
+        Y2MinEditField            matlab.ui.control.NumericEditField
+        Y2MinEditFieldLabel       matlab.ui.control.Label
+        AutoscaleSwitch_2         matlab.ui.control.Switch
+        AutoScaleLabel_2          matlab.ui.control.Label
+        PlotSelectedButton        matlab.ui.control.Button
+        CompChannelDropDown       matlab.ui.control.DropDown
+        ChannelDropDown_2Label    matlab.ui.control.Label
+        CompListBox               matlab.ui.control.ListBox
+        WorkspaceLabel            matlab.ui.control.Label
+        CompColorPicker           matlab.ui.control.ColorPicker
+        ColorLabel                matlab.ui.control.Label
+        CompPlotPanel             matlab.ui.control.UIAxes
+        AnalysisPanel             matlab.ui.container.Tab
+        AllFluoroSwitch           matlab.ui.control.Switch
+        AllFluoroSwitchLabel      matlab.ui.control.Label
+        ExportCSVButton           matlab.ui.control.Button
+        APTable                   matlab.ui.control.Table
+        ClearSelectionButton      matlab.ui.control.Button
+        AUCResult                 matlab.ui.control.Label
+        CalculateAUCButton        matlab.ui.control.Button
+        SelectPoints              matlab.ui.control.Button
+        ChannelDropDown_2         matlab.ui.control.DropDown
+        ChannelDropDown_2Label_2  matlab.ui.control.Label
+        APWorkspaceDropDown       matlab.ui.control.DropDown
+        WorkspaceDropDown_2Label  matlab.ui.control.Label
+        APPlot                    matlab.ui.control.UIAxes
+    end
+
+    
+    properties (Access = private)
+        %currDir % current directory of the system as set by the user
+        workspace = {};     % Cell array to store trimmed data tables
+        currFile            % trimmed file to work with
+        currFilePath        % current file path
+        selectedPoints = [] % array of all the points selected (why is this global)?
+        AUCValues = []
+        RelativeAbundanceValues = []
+        highlightPatch
+
+    end
+    
+    methods (Access = private)
+
+        % change directory to where user specifies, lists compatible files
+        function listing = changeDirectory(~,changeDirectory)
+            
+            if changeDirectory % if change directory is true
+                % change to new chosen directory
+                cd(uigetdir)
+            end
+            
+            % return directory structure of csv files
+            dirStruct = dir('*.csv');
+            listing = {dirStruct.name};
+
+        end
+
+
+        % determine where to start in the files, trim data from sel csv
+        function trimmedFile = trimFile(~, inputFile)
+            % disp(inputFile) % debug
+            data = readtable(inputFile);
+            startRow = find(strcmp(data.Properties.VariableNames, 'SampleA'));
+            if ~isempty(startRow)
+                trimmedFile = data(startRow:end, :);
+            else
+                trimmedFile = data;
+            end
+        end
+
+
+        % set the plot entered to autoscale when called
+        function newAxis = autoScalePlot(~, xData, yData)
+            if isempty(xData) || isempty(yData)
+                newAxis = [0, 1];
+                return;
+            end
+
+            xRange = [0.4 * max(xData), max(xData)];
+            validIndices = find(xData >= xRange(1) & xData <= xRange(2));
+
+            if isempty(validIndices)
+                newAxis = [min(yData), max(yData)];
+            else
+                yInRange = yData(validIndices);
+                yMax = max(yInRange);
+                yMin = min(yInRange);
+                newYMax = 1.25 * yMax;
+                newYMin = min(0, yMin * 1.1);
+                newAxis = [newYMin, newYMax];
+            end
+        end
+
+        % plot current file from channel onto MainPanelPlot
+        function plotMain(app, selectedFile, channel, filepath)
+            % disp(pwd) % debug
+            if filepath
+                app.currFilePath = fullfile(selectedFile);
+                app.currFile = app.trimFile(app.currFilePath);
+            else
+                app.currFile = selectedFile;
+                % app.currFilePath = filepath;
+            end
+            % Update ChannelDropDown
+            columns = app.currFile.Properties.VariableNames;
+            app.ChannelDropDown.Items = columns;
+
+            % handle incoming default plotting y-axis
+            if channel == "Default"
+                if any(strcmp(app.ChannelDropDown.Items, 'AbsA'))
+                    channel = 'AbsA';
+                elseif any(strcmp(app.ChannelDropDown.Items, 'Absorbance'))
+                    channel = 'Absorbance';
+                else
+                    channel = app.ChannelDropDown.Items{1}; % Default to first item if neither found
+                end
+            end
+            app.ChannelDropDown.Value = channel;
+
+            % handle incoming default plotting x-axis
+            if ismember('Position', app.currFile.Properties.VariableNames)
+                x = app.currFile.Position;
+            elseif ismember('Position_mm_', app.currFile.Properties.VariableNames)
+                x = app.currFile.("Position_mm_");
+            else
+                error('Position column not found in the data');
+            end
+
+            % Extract relevant columns
+            y = app.currFile.(channel);
+            
+            
+            % Plot the data
+            plot(app.MainPanelPlot, x, y, '-k');
+            xlabel(app.MainPanelPlot, 'Distance');
+            ylabel(app.MainPanelPlot, app.ChannelDropDown.Value);
+            % disp(app.currFilePath)
+            title(app.MainPanelPlot, ['Data from ', strrep(app.currFilePath, '_', ' ')]);
+            %title(app.MainPanelPlot, ['Data from ', strrep(indices{i}, '_', ' ')]);
+
+            % if autoscale is on, apply new autoscaled axis
+            if app.AutoscaleSwitch.Value == "On"
+                newAxis = app.autoScalePlot(x,y);
+                app.MainPanelPlot.YLim = [newAxis(1), newAxis(2)];
+            end
+        end
+        
+        % plot multiple graphs onto CompPlotPanel
+        function plotComparisonFiles(app, indices, channels)
+            cla(app.CompPlotPanel, 'reset');
+            hold(app.CompPlotPanel, 'on');
+            yyaxis(app.CompPlotPanel, 'left');
+        
+            legendItems = {};
+            y_all = [];
+            for i = 1:length(indices)
+                index = find(strcmp(app.workspace(:,1), [indices{i}, '.csv']));
+                if ~isempty(index)
+                    data = app.workspace{index, 2};
+                    if ismember('Position', data.Properties.VariableNames)
+                        x = data.Position;
+                    elseif ismember('Position_mm_', data.Properties.VariableNames)
+                        x = data.("Position_mm_");
+                    else
+                        continue;
+                    end
+
+                    if strcmp(channels, 'Absorbance')
+                        if ismember('Absorbance', data.Properties.VariableNames)
+                            y = data.Absorbance;
+                        elseif ismember('AbsA', data.Properties.VariableNames)
+                            y = data.AbsA;
+                        else
+                            continue;
+                        end
+                    elseif strcmp(channels, 'Fluorescence')
+                        if ismember('Fluorescence', data.Properties.VariableNames)
+                            y = data.Fluorescence;
+                        elseif ismember('SampleFluorA', data.Properties.VariableNames)
+                            y = data.SampleFluorA;
+                        else
+                            continue;
+                        end
+                    elseif strcmp(channels, 'SampleFluorB')
+                        if ismember('SampleFluorB', data.Properties.VariableNames)
+                            y = data.SampleFluorB;
+                        else
+                            continue;
+                        end
+                    else
+                        continue;
+                    end
+
+                    if any(strcmp(channels, {'Fluorescence', 'SampleFluorB', 'SampleFluorA'}))
+                        yyaxis(app.CompPlotPanel, 'right');
+                        plot(app.CompPlotPanel, x, y, '-');
+                    else
+                        yyaxis(app.CompPlotPanel, 'left');
+                        plot(app.CompPlotPanel, x, y, '-');
+                    end
+                    legendItems{end+1} = [strrep(indices{i}, '_', ' ')];
+                    y_all = [y_all; y];
+                end
+            end
+
+            % After plotting all data, before setting labels
+            if app.AutoscaleSwitch_2.Value == "On"
+                newAxis = app.autoScalePlot(x, y_all); % Assumes x and y from last plotted data
+                app.CompPlotPanel.YLim = newAxis;
+            else
+                minY = app.Y2MinEditField.Value;
+                maxY = app.Y2MaxEditField.Value;
+                if ~isnan(minY) && ~isnan(maxY) && minY < maxY
+                    app.CompPlotPanel.YLim = [minY, maxY];
+                end
+            end
+
+            % axis components
+            hold(app.CompPlotPanel, 'off');
+            xlabel(app.CompPlotPanel, 'Position');
+            yyaxis(app.CompPlotPanel, 'left');
+            ylabel(app.CompPlotPanel, 'Absorbance 260 nm');
+
+            % conditionally show the yyaxis Fluorescence (AU)
+            fluorChannels = {'SampleFluorA', 'SampleFluorB', 'SampleFluor', 'Fluorescence'};
+            if any(strcmp(app.CompChannelDropDown.Value, fluorChannels))
+                yyaxis(app.CompPlotPanel, 'right');
+                ylabel(app.CompPlotPanel, 'Fluorescence (AU)');
+            else
+                yyaxis(app.CompPlotPanel, 'right');
+                ylabel(app.CompPlotPanel, '');
+            end
+
+            % set title for plot
+            title(app.CompPlotPanel, 'Comparison Plot');
+            % set title for legend
+            lgd = legend(app.CompPlotPanel, legendItems);
+            title(lgd, app.CompChannelDropDown.Value);
+            
+            % call this method with:
+            % indices = [1, 3, 5];
+            % channels = {'AbsA', 'SampleFluorA', 'AbsA'};
+            % app.plotComparisonFiles(indices, channels);
+        end
+
+        % plot current file from channel onto MainPanelPlot
+        function plotWorkspaceFiles(app, selectedFile, channel, plotName)
+            
+            % Update ChannelDropDown
+            columns = selectedFile.Properties.VariableNames;
+            app.ChannelDropDown_2.Items = columns;
+
+            % disp(app.ChannelDropDown_2.Items)
+
+            % handle incoming default plotting y-axis
+            if channel == "Default"
+                if any(strcmp(app.ChannelDropDown_2.Items, 'AbsA'))
+                    channel = 'AbsA';
+                elseif any(strcmp(app.ChannelDropDown_2.Items, 'Absorbance'))
+                    channel = 'Absorbance';
+                % else
+                    % channel = app.ChannelDropDown_2.Items{1}; % Default to first item if neither found
+                end
+            end
+            % disp(channel)
+            app.ChannelDropDown_2.Value = channel;
+            % disp(app.ChannelDropDown_2.Items)
+
+            % handle incoming default plotting x-axis
+            if ismember('Position', selectedFile.Properties.VariableNames)
+                x = selectedFile.Position;
+            elseif ismember('Position_mm_', selectedFile.Properties.VariableNames)
+                x = selectedFile.("Position_mm_");
+            else
+                error('Position column not found in the data');
+            end
+
+            % Extract relevant columns
+            y = selectedFile.(channel);
+            
+            
+            % Plot the data
+            plot(app.APPlot, x, y, '-k');
+            xlabel(app.APPlot, 'Distance');
+            ylabel(app.APPlot, channel);
+            % disp(app.currFilePath)
+            title(app.APPlot, ['Data from ', strrep(plotName, '_', ' ')]);
+            %title(app.MainPanelPlot, ['Data from ', strrep(indices{i}, '_', ' ')]);
+
+            % if autoscale is on, apply new autoscaled axis
+            if app.AutoscaleSwitch.Value == "On"
+                newAxis = app.autoScalePlot(x,y);
+                app.APPlot.YLim = [newAxis(1), newAxis(2)];
+            end
+        end
+
+
+% select points for AUC        
+        function selectPointsOnPlot(app, ~, ~)
+            [x, y] = getpts(app.APPlot);
+            app.selectedPoints = [x, y];
+            hold(app.APPlot, 'on');
+            plot(app.APPlot, x, y, 'ro', 'MarkerSize', 10);
+            hold(app.APPlot, 'off');
+        end
+
+
+
+function calculateAreaUnderCurve(app)
+    if numel(app.selectedPoints) < 2
+        warndlg('Please select at least two points.', 'Warning');
+        return;
+    end
+    
+    x = app.selectedPoints(:,1);
+    
+    % Get the plotted data
+    plotData = findobj(app.APPlot, 'Type', 'line', '-and', 'Marker', 'none');
+    if ~isempty(plotData)
+        xData = plotData.XData;
+        yData = plotData.YData;
+
+        % Set new zero if min y value is below 0
+        yMin = min(yData);
+        if yMin < 0
+            yData = yData - yMin;
+        end
+        
+        % Remove duplicate x values
+        [xData_unique, unique_indices] = unique(xData);
+        yData_unique = yData(unique_indices);
+        
+        % Interpolate y values for selected x points
+        y = interp1(xData_unique, yData_unique, x, 'linear', 'extrap');
+        
+        [x_sorted, sort_idx] = sort(x);
+        y_sorted = y(sort_idx);
+        
+        app.AUCValues = zeros(1, length(x_sorted)-1);
+        for i = 1:length(x_sorted)-1
+            segment_x = x_sorted(i:i+1);
+            segment_y = y_sorted(i:i+1);
+            app.AUCValues(i) = trapz(segment_x, segment_y);
+        end
+        
+        total_auc = sum(app.AUCValues);
+        app.AUCResult.Text = sprintf('Total AUC: %.4f', total_auc);
+        
+        % Display individual segment AUCs
+        for i = 1:length(app.AUCValues)
+            fprintf('Segment %d AUC: %.4f\n', i, app.AUCValues(i));
+        end
+    else
+        warndlg('No plotted data found.', 'Warning');
+    end
+end
+
+% determine relative % abundance per curve        
+        function calculateRelativeAbundance(app)
+            if isempty(app.AUCValues)
+                warndlg('Please calculate AUC first.', 'Warning');
+                return;
+            end
+            
+            % Removes the last element - I have NO idea why this works. Do
+            % not change it!!!
+            app.AUCValues(end) = [];
+            disp(app.AUCValues)
+
+
+            totalAUC = sum(app.AUCValues);
+            disp('AUC Values:');
+            disp(app.AUCValues);
+            disp(['Total AUC: ', num2str(totalAUC)]);
+            if totalAUC == 0 || isnan(totalAUC)
+                warndlg('Total AUC is zero or NaN. Cannot calculate relative abundances.', 'Warning');
+                return;
+            end
+
+            relativeAbundances = (app.AUCValues ./ totalAUC) * 100;
+            
+            for i = 1:length(relativeAbundances)
+                fprintf('Segment %d Relative Abundance: %.2f%%\n', i, relativeAbundances(i));
+            end
+            
+            app.RelativeAbundanceValues = relativeAbundances;
+        end
+
+        function highlightSelectedRegion(app)
+            if numel(app.selectedPoints) < 2
+                return;
+            end
+            
+            x_selected = app.selectedPoints(:,1);
+            
+            plotData = findobj(app.APPlot, 'Type', 'line', '-and', 'Marker', 'none');
+            if ~isempty(plotData)
+                xData = plotData.XData;
+                yData = plotData.YData;
+                
+                idx_start = find(xData >= min(x_selected), 1);
+                idx_end = find(xData <= max(x_selected), 1, 'last');
+                
+                x_highlight = xData(idx_start:idx_end);
+                y_highlight = yData(idx_start:idx_end);
+                
+                y_min = min(min(yData),0);
+                
+                hold(app.APPlot, 'on');
+                if isfield(app, 'highlightPatch') && isgraphics(app.highlightPatch)
+                    delete(app.highlightPatch);
+                end
+                app.highlightPatch = fill(app.APPlot, [x_highlight; flipud(x_highlight)], [y_highlight; repmat(y_min, size(y_highlight))], 'r', 'FaceAlpha', 0.3);
+                hold(app.APPlot, 'off');
+            end
+        end
+        
+        % a method to put the different segment AUCs into a MATLAB table object called app.APTable
+        function updateAPTable(app)
+            if isempty(app.AUCValues)
+                return;
+            end
+            
+            numSegments = length(app.AUCValues);
+            segmentNumbers = (1:numSegments)';
+            % segmentNumbers = round(segmentNumbers);
+            auc = app.AUCValues';
+            
+            if ~isempty(app.RelativeAbundanceValues)
+                relativeAbundance = app.RelativeAbundanceValues';
+                data = [num2cell(segmentNumbers), num2cell(auc), num2cell(relativeAbundance)];
+                columnNames = {'Segment', 'AUC', 'RelativeAbundance'};
+            else
+                data = [num2cell(segmentNumbers), num2cell(auc)];
+                columnNames = {'Segment', 'AUC'};
+            end
+            
+            app.APTable.Data = data;
+            app.APTable.ColumnName = columnNames;
+        end
+        
+
+    end
+
+    % Callbacks that handle component events
+    methods (Access = private)
+
+        % Code that executes after component creation
+        function startupFcn(app)
+            % make Mainpanel visible but others invisible
+            clc
+            
+            items = app.changeDirectory(false);
+            if ~isempty(items)
+                app.MPDirectoryDropdown.Items = items;
+            end
+            
+            
+        end
+
+        % Button pushed function: ChangeDirectoryButton
+        function ChangeDirectoryButtonPushed(app, event)
+            % ask user to set the directory and return what's in it
+            items = app.changeDirectory(true);
+            if ~isempty(items)
+                app.MPDirectoryDropdown.Items = items;
+            end
+        end
+
+        % Value changed function: MPDirectoryDropdown
+        function MPDirectoryDropdownValueChanged(app, event)
+            % set the new file active to whatever selected by the dropdown
+            selectedFile = app.MPDirectoryDropdown.Value;
+            if ~strcmp(selectedFile, 'No Data')
+                app.plotMain(selectedFile, "Default", true)
+            else
+                % shouldn't ever be able to select no data but just in case
+                warning('No file selected or available.');
+            end
+            
+        end
+
+        % Value changed function: ChannelDropDown
+        function ChannelDropDownValueChanged(app, event)
+            selectedChannel = app.ChannelDropDown.Value;
+    
+            % Ensure current file data is available
+            if ~isempty(app.currFilePath)
+                
+                % plot the current display with the new selected channel
+                app.plotMain(app.currFilePath, selectedChannel, true);
+                
+            else
+                % Handle case when no file is loaded - RARE case
+                warning('No file data available to plot.');
+            end
+            
+        end
+
+        % Value changed function: MinEditField
+        function MinEditFieldValueChanged(app, event)
+            value = app.MinEditField.Value;
+        
+            % check to see if input is valid then set min axis
+            if ~isnan(value) && isreal(value) && value < app.MainPanelPlot.YLim(2)
+                app.MainPanelPlot.YLim = [value, app.MainPanelPlot.YLim(2)];
+            end    
+        end
+
+        % Value changed function: MaxEditField
+        function MaxEditFieldValueChanged(app, event)
+            value = app.MaxEditField.Value;
+            
+            % check to see if input is valid then set max axis
+            if ~isnan(value) && isreal(value) && value > app.MainPanelPlot.YLim(1)
+                app.MainPanelPlot.YLim = [app.MainPanelPlot.YLim(1), value];
+            end
+        end
+
+        % Button pushed function: LoadtoWorkspaceButton
+        function LoadtoWorkspaceButtonPushed(app, event)
+            % Add trimmedData to workspace
+            if ~isempty(app.currFilePath) || ~isempty(app.currFile)
+                if isempty(app.workspace)
+                    % Initialize workspace if empty
+                    app.workspace = {app.currFilePath, app.currFile};
+                else
+                    % Add new row to workspace
+                    app.workspace(end+1,:) = {app.currFilePath, app.currFile};
+                end 
+            end
+            
+            if ~isempty(app.currFilePath)
+                % Extract filename from path
+                [~, filename, ~] = fileparts(app.currFilePath);
+            
+                if ~ismember(filename, app.WorkspaceDropDown.Items)
+                    if ismember('No Data', app.WorkspaceDropDown.Items)
+                        % Replace 'No Data' with first actual filename
+                        app.WorkspaceDropDown.Items = {filename};
+                    else
+                        % Append new filename to dropdown list
+                        app.WorkspaceDropDown.Items = [app.WorkspaceDropDown.Items, {filename}];
+                        
+                    end
+                end
+            end
+            
+            
+            %disp(app.workspace)
+        end
+
+        % Value changed function: AutoscaleSwitch
+        function AutoscaleSwitchValueChanged(app, event)
+            value = app.AutoscaleSwitch.Value;
+            
+        end
+
+        % Button pushed function: LoadfromWorkspaceButton
+        function LoadfromWorkspaceButtonPushed(app, event)
+            if app.WorkspaceDropDown.Value ~= "No Data"
+                % in workspace, use the selection name to get the appropriate
+                % trimmed-off data
+                selection = [app.WorkspaceDropDown.Value, '.csv'];
+    
+                % select the appropriate file in the workspace
+                selectedIndex = find(strcmp(app.workspace(:,1), selection));
+                if ~isempty(selectedIndex)
+                    selectedFile = app.workspace{selectedIndex, 2};
+                    app.currFilePath = selection;
+                end
+                
+                % plot the current display with the new selected channel
+                app.plotMain(selectedFile, "Default", false);
+                
+            end
+        end
+
+        % Button pushed function: ClearfromWorkspaceButton
+        function ClearfromWorkspaceButtonPushed(app, event)
+            if ~strcmp(app.WorkspaceDropDown.Value, "No Data")
+                selection = [app.WorkspaceDropDown.Value, '.csv'];
+                
+                % Find and remove item from WorkspaceDropDown
+                ddindex = find(strcmp(app.WorkspaceDropDown.Items, app.WorkspaceDropDown.Value));
+                app.WorkspaceDropDown.Items(ddindex) = [];
+                
+                % Remove from workspace
+                selectedIndex = find(strcmp(app.workspace(:,1), selection));
+                app.workspace(selectedIndex, :) = [];
+                
+                % Update dropdown value if items remain
+                if ~isempty(app.WorkspaceDropDown.Items)
+                    app.WorkspaceDropDown.Value = app.WorkspaceDropDown.Items{1};
+                else
+                    app.WorkspaceDropDown.Items = {'No Data'};
+                    app.WorkspaceDropDown.Value = 'No Data';
+                end
+            end
+        end
+
+        % Button pushed function: ClearWorkspaceButton
+        function ClearWorkspaceButtonPushed(app, event)
+            % wipe the whole workspace
+            app.WorkspaceDropDown.Items = "No Data";
+            app.workspace = {};
+        end
+
+        % Button pushed function: LoadAlltoWorkspaceButton
+        function LoadAlltoWorkspaceButtonPushed(app, event)
+            % Get list of files from dropdown
+            files = app.MPDirectoryDropdown.Items;
+            % disp(files)  % Display files for debugging
+            
+            % Iterate through each file
+            for i = 1:length(files)
+                if ~strcmp(files{i}, 'No Data')  % Skip 'No Data' entry
+                    filePath = fullfile(pwd, files{i});  % Construct full file path
+                    trimmedFile = app.trimFile(filePath);  % Trim file data
+                    
+                    % Add file to workspace
+                    if isempty(app.workspace)
+                        app.workspace = {files{i}, trimmedFile};  % Initialize workspace
+                    else
+                        app.workspace(end+1,:) = {files{i}, trimmedFile};  % Add new row
+                    end
+                    
+                    % Update WorkspaceDropDown
+                    [~, filename, ~] = fileparts(filePath);
+                    if ~ismember(filename, app.WorkspaceDropDown.Items)
+                        if ismember('No Data', app.WorkspaceDropDown.Items)
+                            app.WorkspaceDropDown.Items = {filename};  % Replace 'No Data'
+                        else
+                            app.WorkspaceDropDown.Items = [app.WorkspaceDropDown.Items, {filename}];  % Append filename
+                        end
+                    end
+                end
+            end
+            
+            % disp(app.workspace) % debug
+        end
+
+        % Value changed function: WorkspaceDropDown
+        function WorkspaceDropDownValueChanged(app, event)
+            if app.AutoLoadWorkspace.Value
+                LoadfromWorkspaceButtonPushed(app, matlab.ui.eventdata.ButtonPushedData)
+            end
+        end
+
+        % Callback function: ColorPicker
+        function ColorPickerValueChanged(app, event)
+            value = app.ColorPicker.Value;
+            if ~isempty(app.MainPanelPlot.Children)
+                app.MainPanelPlot.Children.Color = value;
+            end
+        end
+
+        % Button down function: ComparisonPanel
+        function ComparisonPanelButtonDown(app, event)
+            % add/subtract data to/from compworkspace too
+            app.CompListBox.Items = app.WorkspaceDropDown.Items;
+        end
+
+        % Button down function: MainPanel
+        function MainPanelButtonDown(app, event)
+            % add/subtract data to/from compworkspace too
+            %app.WorkspaceDropDown.Items = app.CompListBox.Items;
+        end
+
+        % Callback function: CompListBox, CompListBox
+        function CompListBoxClicked(app, event)
+            selectedIndices = app.CompListBox.Value;
+            allChannels = {};
+        
+            if ~isempty(selectedIndices) && selectedIndices{1} ~= "No Data"
+                for i = 1:numel(selectedIndices)
+                    selectedIndex = find(strcmp(app.workspace(:,1), [selectedIndices{i},'.csv']));
+                    if ~isempty(selectedIndex)
+                        fileChannels = app.workspace{selectedIndex, 2}.Properties.VariableNames;
+                        fileChannels = replace(fileChannels, {'AbsA', 'Absorbance'}, 'Absorbance');
+                        fileChannels = replace(fileChannels, 'Fluorescence', 'SampleFluorA');
+                        allChannels = union(allChannels, fileChannels);
+                    end
+                end
+        
+                app.CompChannelDropDown.Items = allChannels;
+                if ~isempty(allChannels)
+                    app.CompChannelDropDown.Value = allChannels{1};
+                else
+                    app.CompChannelDropDown.Value = '';
+                end 
+            end
+
+            
+        end
+
+        % Button pushed function: PlotSelectedButton
+        function PlotSelectedButtonPushed(app, event)
+            % plot the files selected - make sure data exists to plot first
+            if ~isempty(app.CompListBox.Value) && all(~strcmp(app.CompListBox.Value, "No Data")) ... 
+                    && ~strcmp(app.CompChannelDropDown.Value, "No Data")
+                
+                app.plotComparisonFiles(app.CompListBox.Value, app.CompChannelDropDown.Value)
+                app.ColorDropDown.Items = app.CompListBox.Value;
+            end
+        end
+
+        % Value changed function: Y2MinEditField
+        function Y2MinEditFieldValueChanged(app, event)
+            value = app.Y2MinEditField.Value;
+            if ~isnan(value) && isreal(value) && value < app.Y2MaxEditField.Value
+                yyaxis(app.CompPlotPanel, 'right');
+                ylim(app.CompPlotPanel, [value, app.CompPlotPanel.YLim(2)]);
+            end
+            
+        end
+
+        % Value changed function: Y2MaxEditField
+        function Y2MaxEditFieldValueChanged(app, event)
+            value = app.Y2MaxEditField.Value;
+            if ~isnan(value) && isreal(value) && value > app.Y2MinEditField.Value
+                yyaxis(app.CompPlotPanel, 'right');
+                ylim(app.CompPlotPanel, [app.CompPlotPanel.YLim(1), value]);
+            end
+        end
+
+        % Value changed function: Y1MinEditField
+        function Y1MinEditFieldValueChanged(app, event)
+            value = app.Y1MinEditField.Value;
+            if ~isnan(value) && isreal(value) && value < app.Y1MaxEditField.Value
+                yyaxis(app.CompPlotPanel, 'left');
+                ylim(app.CompPlotPanel, [value, app.CompPlotPanel.YLim(2)]);
+            end
+        end
+
+        % Value changed function: Y1MaxEditField
+        function Y1MaxEditFieldValueChanged(app, event)
+            value = app.Y1MaxEditField.Value;
+            if ~isnan(value) && isreal(value) && value > app.Y1MinEditField.Value
+                yyaxis(app.CompPlotPanel, 'left');
+                ylim(app.CompPlotPanel, [app.CompPlotPanel.YLim(1), value]);
+            end
+
+        end
+
+        % Callback function: CompColorPicker
+        function CompColorPickerValueChanged(app, event)
+            % get the new color and the selected line
+            newColor = app.CompColorPicker.Value;
+            selectedLine = [strrep(app.ColorDropDown.Value, "_", " ")];
+            % disp(selectedLine)
+
+            % find out what is inside the CompPlotPanel
+            lineObj = findobj(app.CompPlotPanel, 'Type', 'Line', 'DisplayName', selectedLine);
+        
+            % if something is graphed, set the specified line to that color
+            if ~isempty(lineObj)
+                % set(lineObj, 'Color', newColor);
+                lineObj.Color = newColor;
+            else
+                warning('Selected line not found.');
+            end
+            
+        end
+
+        % Value changed function: XMinEditField
+        function XMinEditFieldValueChanged(app, event)
+            value = app.XMinEditField.Value;
+            selectedLine = [strrep(app.ColorDropDown.Value, "_", " ")];
+            lineObj = findobj(app.CompPlotPanel, 'Type', 'Line', 'DisplayName', selectedLine);
+
+            if ~isempty(lineObj)
+                % Get the original data source
+                originalXData = lineObj.XData;
+                originalYData = lineObj.YData;
+
+                % Filter the data based on the new x-minimum value
+                newXData = originalXData(originalXData >= value) - value;
+                newYData = originalYData(originalXData >= value);
+
+                % Update the data source and refresh the plot
+                lineObj.XData = newXData;
+                lineObj.YData = newYData;
+
+                % Redraw the plot, keeping the previous y-axis limits
+                app.CompPlotPanel.XLim = [0, max(newXData)];
+                drawnow;
+            else
+                warning('Selected line not found.');
+            end
+        end
+
+        % Button down function: AnalysisPanel
+        function AnalysisPanelButtonDown(app, event)
+            % add/subtract data to/from compworkspace too
+            app.APWorkspaceDropDown.Items = app.WorkspaceDropDown.Items;
+
+            value = app.APWorkspaceDropDown.Value;
+
+            if ~strcmp(value, "No Data")
+                % Find the corresponding index in the workspace
+                selectedIndex = find(strcmp(app.workspace(:,1), [value, '.csv']));
+
+                if ~isempty(selectedIndex)
+                    % Get the selected file data
+                    selectedFile = app.workspace{selectedIndex, 2};
+                    % display(selectedFile)
+
+
+                    if app.ChannelDropDown_2.Value ~= "No Data"
+                    % Plot the selected file using plotWorkspaceFiles
+                        plotWorkspaceFiles(app, selectedFile, app.ChannelDropDown_2.Value, app.workspace{selectedIndex, 1});
+                    else
+                        plotWorkspaceFiles(app, selectedFile, "Default", app.workspace{selectedIndex, 1});
+                        disp("default triggered")
+
+                    end
+                end
+            end
+        end
+
+        % Value changed function: ChannelDropDown_2
+        function ChannelDropDown_2ValueChanged(app, event)
+           value = app.APWorkspaceDropDown.Value;
+    
+            if ~strcmp(value, "No Data")
+                % Find the corresponding index in the workspace
+                selectedIndex = find(strcmp(app.workspace(:,1), [value, '.csv']));
+
+                if ~isempty(selectedIndex)
+                    % Get the selected file data
+                    selectedFile = app.workspace{selectedIndex, 2};
+                    % display(selectedFile)
+
+
+                    if app.ChannelDropDown_2.Value ~= "No Data"
+                    % Plot the selected file using plotWorkspaceFiles
+                        plotWorkspaceFiles(app, selectedFile, app.ChannelDropDown_2.Value, app.workspace{selectedIndex, 1});
+                    else
+                        plotWorkspaceFiles(app, selectedFile, "Default", app.workspace{selectedIndex, 1});
+                        disp("default triggered")
+
+                    end
+                end
+            end
+        end
+
+        % Value changed function: APWorkspaceDropDown
+        function APWorkspaceDropDownValueChanged(app, event)
+            value = app.APWorkspaceDropDown.Value;
+    
+            if ~strcmp(value, "No Data")
+                % Find the corresponding index in the workspace
+                selectedIndex = find(strcmp(app.workspace(:,1), [value, '.csv']));
+
+                if ~isempty(selectedIndex)
+                    % Get the selected file data
+                    selectedFile = app.workspace{selectedIndex, 2};
+                    % display(selectedFile)
+
+
+                    if app.ChannelDropDown_2.Value ~= "No Data"
+                    % Plot the selected file using plotWorkspaceFiles
+                        plotWorkspaceFiles(app, selectedFile, app.ChannelDropDown_2.Value, app.workspace{selectedIndex, 1});
+                    else
+                        plotWorkspaceFiles(app, selectedFile, "Default", app.workspace{selectedIndex, 1});
+                        disp("default triggered")
+
+                    end
+                end
+            end
+        end
+
+        % Button pushed function: SelectPoints
+        function SelectPointsButtonPushed(app, event)
+            % Enable interactivity on the plot
+            app.APPlot.ButtonDownFcn = @(src,evt)selectPointsOnPlot(app, src, evt);
+            
+            % Initialize the selected points data structure
+            app.selectedPoints = [];
+            %~~~~~~~~~~~~~~~~~~
+            
+        end
+
+        % Button pushed function: CalculateAUCButton
+        function CalculateAUCButtonPushed(app, event)
+            calculateAreaUnderCurve(app);
+            highlightSelectedRegion(app);
+            app.AUCValues(end+1) = str2double(app.AUCResult.Text(6:end));
+            calculateRelativeAbundance(app);
+            updateAPTable(app);
+        end
+
+        % Button pushed function: ClearSelectionButton
+        function ClearSelectionButtonPushed(app, event)
+        % Clear highlighted patches
+        if isfield(app, 'highlightPatch') && isgraphics(app.highlightPatch)
+            delete(app.highlightPatch);
+        end
+        
+        % Clear selected points
+        if ~isempty(app.selectedPoints)
+            app.selectedPoints = [];
+        end
+        
+        % Remove point markers
+        delete(findobj(app.APPlot, 'Type', 'line', 'Marker', 'o'));
+        
+        % Reset any related displays or results
+        app.AUCResult.Text = 'AUC: ';
+        
+        % Refresh the plot
+        APWorkspaceDropDownValueChanged(app, event);
+        end
+    end
+
+    % Component initialization
+    methods (Access = private)
+
+        % Create UIFigure and components
+        function createComponents(app)
+
+            % Create UIFigureMain and hide until all components are created
+            app.UIFigureMain = uifigure('Visible', 'off');
+            app.UIFigureMain.Color = [0.902 0.902 0.902];
+            app.UIFigureMain.Position = [100 100 879 573];
+            app.UIFigureMain.Name = 'MATLAB App';
+
+            % Create TabGroup
+            app.TabGroup = uitabgroup(app.UIFigureMain);
+            app.TabGroup.Position = [1 1 879 573];
+
+            % Create MainPanel
+            app.MainPanel = uitab(app.TabGroup);
+            app.MainPanel.Title = 'Main Panel';
+            app.MainPanel.ButtonDownFcn = createCallbackFcn(app, @MainPanelButtonDown, true);
+
+            % Create MainPanelPlot
+            app.MainPanelPlot = uiaxes(app.MainPanel);
+            title(app.MainPanelPlot, 'No Data')
+            xlabel(app.MainPanelPlot, 'X')
+            ylabel(app.MainPanelPlot, 'Y')
+            zlabel(app.MainPanelPlot, 'Z')
+            app.MainPanelPlot.Position = [21 19 838 411];
+
+            % Create ChangeDirectoryButton
+            app.ChangeDirectoryButton = uibutton(app.MainPanel, 'push');
+            app.ChangeDirectoryButton.ButtonPushedFcn = createCallbackFcn(app, @ChangeDirectoryButtonPushed, true);
+            app.ChangeDirectoryButton.Position = [15 511 108 22];
+            app.ChangeDirectoryButton.Text = 'Change Directory';
+
+            % Create MPDirectoryDropdown
+            app.MPDirectoryDropdown = uidropdown(app.MainPanel);
+            app.MPDirectoryDropdown.Items = {'No Data'};
+            app.MPDirectoryDropdown.ValueChangedFcn = createCallbackFcn(app, @MPDirectoryDropdownValueChanged, true);
+            app.MPDirectoryDropdown.BackgroundColor = [1 1 1];
+            app.MPDirectoryDropdown.Position = [122 479 100 22];
+            app.MPDirectoryDropdown.Value = 'No Data';
+
+            % Create DirectoryFilesLabel
+            app.DirectoryFilesLabel = uilabel(app.MainPanel);
+            app.DirectoryFilesLabel.HorizontalAlignment = 'right';
+            app.DirectoryFilesLabel.Position = [22 479 85 22];
+            app.DirectoryFilesLabel.Text = 'Directory Files:';
+
+            % Create ChannelLabel
+            app.ChannelLabel = uilabel(app.MainPanel);
+            app.ChannelLabel.HorizontalAlignment = 'right';
+            app.ChannelLabel.Position = [47 449 60 22];
+            app.ChannelLabel.Text = 'Channel:';
+
+            % Create ChannelDropDown
+            app.ChannelDropDown = uidropdown(app.MainPanel);
+            app.ChannelDropDown.Items = {'No Data'};
+            app.ChannelDropDown.ValueChangedFcn = createCallbackFcn(app, @ChannelDropDownValueChanged, true);
+            app.ChannelDropDown.Position = [122 449 100 22];
+            app.ChannelDropDown.Value = 'No Data';
+
+            % Create MinEditFieldLabel
+            app.MinEditFieldLabel = uilabel(app.MainPanel);
+            app.MinEditFieldLabel.HorizontalAlignment = 'right';
+            app.MinEditFieldLabel.Position = [779 509 25 22];
+            app.MinEditFieldLabel.Text = 'Min';
+
+            % Create MinEditField
+            app.MinEditField = uieditfield(app.MainPanel, 'numeric');
+            app.MinEditField.ValueChangedFcn = createCallbackFcn(app, @MinEditFieldValueChanged, true);
+            app.MinEditField.Position = [826 509 36 22];
+
+            % Create MaxEditFieldLabel
+            app.MaxEditFieldLabel = uilabel(app.MainPanel);
+            app.MaxEditFieldLabel.HorizontalAlignment = 'right';
+            app.MaxEditFieldLabel.Position = [779 479 28 22];
+            app.MaxEditFieldLabel.Text = 'Max';
+
+            % Create MaxEditField
+            app.MaxEditField = uieditfield(app.MainPanel, 'numeric');
+            app.MaxEditField.ValueChangedFcn = createCallbackFcn(app, @MaxEditFieldValueChanged, true);
+            app.MaxEditField.Position = [826 479 36 22];
+
+            % Create LoadtoWorkspaceButton
+            app.LoadtoWorkspaceButton = uibutton(app.MainPanel, 'push');
+            app.LoadtoWorkspaceButton.ButtonPushedFcn = createCallbackFcn(app, @LoadtoWorkspaceButtonPushed, true);
+            app.LoadtoWorkspaceButton.Position = [318 511 118 22];
+            app.LoadtoWorkspaceButton.Text = 'Load to Workspace';
+
+            % Create WorkspaceDropDownLabel
+            app.WorkspaceDropDownLabel = uilabel(app.MainPanel);
+            app.WorkspaceDropDownLabel.HorizontalAlignment = 'right';
+            app.WorkspaceDropDownLabel.Position = [327 479 65 22];
+            app.WorkspaceDropDownLabel.Text = 'Workspace';
+
+            % Create WorkspaceDropDown
+            app.WorkspaceDropDown = uidropdown(app.MainPanel);
+            app.WorkspaceDropDown.Items = {'No Data'};
+            app.WorkspaceDropDown.ValueChangedFcn = createCallbackFcn(app, @WorkspaceDropDownValueChanged, true);
+            app.WorkspaceDropDown.Position = [407 479 100 22];
+            app.WorkspaceDropDown.Value = 'No Data';
+
+            % Create ClearfromWorkspaceButton
+            app.ClearfromWorkspaceButton = uibutton(app.MainPanel, 'push');
+            app.ClearfromWorkspaceButton.ButtonPushedFcn = createCallbackFcn(app, @ClearfromWorkspaceButtonPushed, true);
+            app.ClearfromWorkspaceButton.Position = [318 449 133 22];
+            app.ClearfromWorkspaceButton.Text = 'Clear from Workspace';
+
+            % Create ClearWorkspaceButton
+            app.ClearWorkspaceButton = uibutton(app.MainPanel, 'push');
+            app.ClearWorkspaceButton.ButtonPushedFcn = createCallbackFcn(app, @ClearWorkspaceButtonPushed, true);
+            app.ClearWorkspaceButton.Position = [460 449 106 22];
+            app.ClearWorkspaceButton.Text = 'Clear Workspace';
+
+            % Create AutoScaleLabel
+            app.AutoScaleLabel = uilabel(app.MainPanel);
+            app.AutoScaleLabel.HorizontalAlignment = 'center';
+            app.AutoScaleLabel.Position = [626 478 63 22];
+            app.AutoScaleLabel.Text = 'Auto Scale';
+
+            % Create LoadfromWorkspaceButton
+            app.LoadfromWorkspaceButton = uibutton(app.MainPanel, 'push');
+            app.LoadfromWorkspaceButton.ButtonPushedFcn = createCallbackFcn(app, @LoadfromWorkspaceButtonPushed, true);
+            app.LoadfromWorkspaceButton.Position = [460 511 132 22];
+            app.LoadfromWorkspaceButton.Text = 'Load from Workspace';
+
+            % Create AutoscaleSwitch
+            app.AutoscaleSwitch = uiswitch(app.MainPanel, 'slider');
+            app.AutoscaleSwitch.ValueChangedFcn = createCallbackFcn(app, @AutoscaleSwitchValueChanged, true);
+            app.AutoscaleSwitch.Position = [635 510 45 20];
+            app.AutoscaleSwitch.Value = 'On';
+
+            % Create LoadAlltoWorkspaceButton
+            app.LoadAlltoWorkspaceButton = uibutton(app.MainPanel, 'push');
+            app.LoadAlltoWorkspaceButton.ButtonPushedFcn = createCallbackFcn(app, @LoadAlltoWorkspaceButtonPushed, true);
+            app.LoadAlltoWorkspaceButton.Position = [131 511 134 22];
+            app.LoadAlltoWorkspaceButton.Text = 'Load All to Workspace';
+
+            % Create AutoLoadWorkspace
+            app.AutoLoadWorkspace = uicheckbox(app.MainPanel);
+            app.AutoLoadWorkspace.Text = 'Auto load';
+            app.AutoLoadWorkspace.Position = [520 479 72 22];
+            app.AutoLoadWorkspace.Value = true;
+
+            % Create ColorPickerLabel
+            app.ColorPickerLabel = uilabel(app.MainPanel);
+            app.ColorPickerLabel.HorizontalAlignment = 'right';
+            app.ColorPickerLabel.Position = [736 449 70 22];
+            app.ColorPickerLabel.Text = 'Color Picker';
+
+            % Create ColorPicker
+            app.ColorPicker = uicolorpicker(app.MainPanel);
+            app.ColorPicker.ValueChangedFcn = createCallbackFcn(app, @ColorPickerValueChanged, true);
+            app.ColorPicker.Position = [821 449 38 22];
+
+            % Create ComparisonPanel
+            app.ComparisonPanel = uitab(app.TabGroup);
+            app.ComparisonPanel.Title = 'Comparison Graphing';
+            app.ComparisonPanel.ButtonDownFcn = createCallbackFcn(app, @ComparisonPanelButtonDown, true);
+
+            % Create CompPlotPanel
+            app.CompPlotPanel = uiaxes(app.ComparisonPanel);
+            title(app.CompPlotPanel, 'No Data')
+            xlabel(app.CompPlotPanel, 'X')
+            ylabel(app.CompPlotPanel, 'Y')
+            zlabel(app.CompPlotPanel, 'Z')
+            app.CompPlotPanel.Position = [21 19 838 390];
+
+            % Create ColorLabel
+            app.ColorLabel = uilabel(app.ComparisonPanel);
+            app.ColorLabel.HorizontalAlignment = 'right';
+            app.ColorLabel.Position = [352 454 34 22];
+            app.ColorLabel.Text = 'Color';
+
+            % Create CompColorPicker
+            app.CompColorPicker = uicolorpicker(app.ComparisonPanel);
+            app.CompColorPicker.ValueChangedFcn = createCallbackFcn(app, @CompColorPickerValueChanged, true);
+            app.CompColorPicker.Position = [393 453 38 22];
+
+            % Create WorkspaceLabel
+            app.WorkspaceLabel = uilabel(app.ComparisonPanel);
+            app.WorkspaceLabel.HorizontalAlignment = 'right';
+            app.WorkspaceLabel.Position = [1 521 68 22];
+            app.WorkspaceLabel.Text = 'Workspace:';
+
+            % Create CompListBox
+            app.CompListBox = uilistbox(app.ComparisonPanel);
+            app.CompListBox.Items = {'No Data'};
+            app.CompListBox.Multiselect = 'on';
+            app.CompListBox.ValueChangedFcn = createCallbackFcn(app, @CompListBoxClicked, true);
+            app.CompListBox.ClickedFcn = createCallbackFcn(app, @CompListBoxClicked, true);
+            app.CompListBox.Position = [86 429 267 113];
+            app.CompListBox.Value = {'No Data'};
+
+            % Create ChannelDropDown_2Label
+            app.ChannelDropDown_2Label = uilabel(app.ComparisonPanel);
+            app.ChannelDropDown_2Label.HorizontalAlignment = 'right';
+            app.ChannelDropDown_2Label.Position = [362 520 60 22];
+            app.ChannelDropDown_2Label.Text = 'Channel:';
+
+            % Create CompChannelDropDown
+            app.CompChannelDropDown = uidropdown(app.ComparisonPanel);
+            app.CompChannelDropDown.Items = {'No Data'};
+            app.CompChannelDropDown.Position = [437 520 100 22];
+            app.CompChannelDropDown.Value = 'No Data';
+
+            % Create PlotSelectedButton
+            app.PlotSelectedButton = uibutton(app.ComparisonPanel, 'push');
+            app.PlotSelectedButton.ButtonPushedFcn = createCallbackFcn(app, @PlotSelectedButtonPushed, true);
+            app.PlotSelectedButton.Position = [437 488 100 22];
+            app.PlotSelectedButton.Text = 'Plot Selected';
+
+            % Create AutoScaleLabel_2
+            app.AutoScaleLabel_2 = uilabel(app.ComparisonPanel);
+            app.AutoScaleLabel_2.HorizontalAlignment = 'center';
+            app.AutoScaleLabel_2.Position = [679 491 63 22];
+            app.AutoScaleLabel_2.Text = 'Auto Scale';
+
+            % Create AutoscaleSwitch_2
+            app.AutoscaleSwitch_2 = uiswitch(app.ComparisonPanel, 'slider');
+            app.AutoscaleSwitch_2.Position = [688 523 45 20];
+            app.AutoscaleSwitch_2.Value = 'On';
+
+            % Create Y2MinEditFieldLabel
+            app.Y2MinEditFieldLabel = uilabel(app.ComparisonPanel);
+            app.Y2MinEditFieldLabel.HorizontalAlignment = 'right';
+            app.Y2MinEditFieldLabel.Position = [775 458 42 22];
+            app.Y2MinEditFieldLabel.Text = 'Y2 Min';
+
+            % Create Y2MinEditField
+            app.Y2MinEditField = uieditfield(app.ComparisonPanel, 'numeric');
+            app.Y2MinEditField.ValueChangedFcn = createCallbackFcn(app, @Y2MinEditFieldValueChanged, true);
+            app.Y2MinEditField.Position = [823 458 36 22];
+
+            % Create Y2MaxEditFieldLabel
+            app.Y2MaxEditFieldLabel = uilabel(app.ComparisonPanel);
+            app.Y2MaxEditFieldLabel.HorizontalAlignment = 'right';
+            app.Y2MaxEditFieldLabel.Position = [737 429 80 22];
+            app.Y2MaxEditFieldLabel.Text = 'Y2 Max';
+
+            % Create Y2MaxEditField
+            app.Y2MaxEditField = uieditfield(app.ComparisonPanel, 'numeric');
+            app.Y2MaxEditField.ValueChangedFcn = createCallbackFcn(app, @Y2MaxEditFieldValueChanged, true);
+            app.Y2MaxEditField.Position = [823 429 36 22];
+
+            % Create Y1MinEditFieldLabel
+            app.Y1MinEditFieldLabel = uilabel(app.ComparisonPanel);
+            app.Y1MinEditFieldLabel.HorizontalAlignment = 'right';
+            app.Y1MinEditFieldLabel.Position = [775 526 42 22];
+            app.Y1MinEditFieldLabel.Text = 'Y1 Min';
+
+            % Create Y1MinEditField
+            app.Y1MinEditField = uieditfield(app.ComparisonPanel, 'numeric');
+            app.Y1MinEditField.ValueChangedFcn = createCallbackFcn(app, @Y1MinEditFieldValueChanged, true);
+            app.Y1MinEditField.Position = [823 526 36 22];
+
+            % Create Y1MaxEditFieldLabel
+            app.Y1MaxEditFieldLabel = uilabel(app.ComparisonPanel);
+            app.Y1MaxEditFieldLabel.HorizontalAlignment = 'right';
+            app.Y1MaxEditFieldLabel.Position = [737 496 80 22];
+            app.Y1MaxEditFieldLabel.Text = 'Y1 Max';
+
+            % Create Y1MaxEditField
+            app.Y1MaxEditField = uieditfield(app.ComparisonPanel, 'numeric');
+            app.Y1MaxEditField.ValueChangedFcn = createCallbackFcn(app, @Y1MaxEditFieldValueChanged, true);
+            app.Y1MaxEditField.Position = [823 496 36 22];
+
+            % Create ColorDropDown
+            app.ColorDropDown = uidropdown(app.ComparisonPanel);
+            app.ColorDropDown.Items = {'No Data'};
+            app.ColorDropDown.Position = [437 453 211 22];
+            app.ColorDropDown.Value = 'No Data';
+
+            % Create CtrlclickLabel
+            app.CtrlclickLabel = uilabel(app.ComparisonPanel);
+            app.CtrlclickLabel.Position = [12 501 72 22];
+            app.CtrlclickLabel.Text = '(Ctrl+click) >';
+
+            % Create XMinLabel
+            app.XMinLabel = uilabel(app.ComparisonPanel);
+            app.XMinLabel.HorizontalAlignment = 'right';
+            app.XMinLabel.Position = [387 420 36 22];
+            app.XMinLabel.Text = 'X Min';
+
+            % Create XMinEditField
+            app.XMinEditField = uieditfield(app.ComparisonPanel, 'numeric');
+            app.XMinEditField.ValueChangedFcn = createCallbackFcn(app, @XMinEditFieldValueChanged, true);
+            app.XMinEditField.Position = [438 420 100 22];
+
+            % Create AnalysisPanel
+            app.AnalysisPanel = uitab(app.TabGroup);
+            app.AnalysisPanel.Title = 'Trace Analysis';
+            app.AnalysisPanel.ButtonDownFcn = createCallbackFcn(app, @AnalysisPanelButtonDown, true);
+
+            % Create APPlot
+            app.APPlot = uiaxes(app.AnalysisPanel);
+            title(app.APPlot, 'No Data')
+            xlabel(app.APPlot, 'X')
+            ylabel(app.APPlot, 'Y')
+            zlabel(app.APPlot, 'Z')
+            app.APPlot.Position = [21 19 838 390];
+
+            % Create WorkspaceDropDown_2Label
+            app.WorkspaceDropDown_2Label = uilabel(app.AnalysisPanel);
+            app.WorkspaceDropDown_2Label.HorizontalAlignment = 'right';
+            app.WorkspaceDropDown_2Label.Position = [17 508 65 22];
+            app.WorkspaceDropDown_2Label.Text = 'Workspace';
+
+            % Create APWorkspaceDropDown
+            app.APWorkspaceDropDown = uidropdown(app.AnalysisPanel);
+            app.APWorkspaceDropDown.Items = {'No Data'};
+            app.APWorkspaceDropDown.ValueChangedFcn = createCallbackFcn(app, @APWorkspaceDropDownValueChanged, true);
+            app.APWorkspaceDropDown.Position = [97 508 100 22];
+            app.APWorkspaceDropDown.Value = 'No Data';
+
+            % Create ChannelDropDown_2Label_2
+            app.ChannelDropDown_2Label_2 = uilabel(app.AnalysisPanel);
+            app.ChannelDropDown_2Label_2.HorizontalAlignment = 'right';
+            app.ChannelDropDown_2Label_2.Position = [23 470 60 22];
+            app.ChannelDropDown_2Label_2.Text = 'Channel:';
+
+            % Create ChannelDropDown_2
+            app.ChannelDropDown_2 = uidropdown(app.AnalysisPanel);
+            app.ChannelDropDown_2.Items = {'No Data'};
+            app.ChannelDropDown_2.ValueChangedFcn = createCallbackFcn(app, @ChannelDropDown_2ValueChanged, true);
+            app.ChannelDropDown_2.Position = [98 470 100 22];
+            app.ChannelDropDown_2.Value = 'No Data';
+
+            % Create SelectPoints
+            app.SelectPoints = uibutton(app.AnalysisPanel, 'push');
+            app.SelectPoints.ButtonPushedFcn = createCallbackFcn(app, @SelectPointsButtonPushed, true);
+            app.SelectPoints.Position = [99 432 100 23];
+            app.SelectPoints.Text = 'Select Points';
+
+            % Create CalculateAUCButton
+            app.CalculateAUCButton = uibutton(app.AnalysisPanel, 'push');
+            app.CalculateAUCButton.ButtonPushedFcn = createCallbackFcn(app, @CalculateAUCButtonPushed, true);
+            app.CalculateAUCButton.Position = [220 432 100 23];
+            app.CalculateAUCButton.Text = 'Calculate AUC';
+
+            % Create AUCResult
+            app.AUCResult = uilabel(app.AnalysisPanel);
+            app.AUCResult.Position = [336 432 366 22];
+            app.AUCResult.Text = 'AUC Result';
+
+            % Create ClearSelectionButton
+            app.ClearSelectionButton = uibutton(app.AnalysisPanel, 'push');
+            app.ClearSelectionButton.ButtonPushedFcn = createCallbackFcn(app, @ClearSelectionButtonPushed, true);
+            app.ClearSelectionButton.Position = [221 473 100 23];
+            app.ClearSelectionButton.Text = 'ClearSelection';
+
+            % Create APTable
+            app.APTable = uitable(app.AnalysisPanel);
+            app.APTable.ColumnName = {'Column 1'; 'Column 2'; 'Column 3'; 'Column 4'};
+            app.APTable.RowName = {};
+            app.APTable.Position = [494 420 354 117];
+
+            % Create ExportCSVButton
+            app.ExportCSVButton = uibutton(app.AnalysisPanel, 'push');
+            app.ExportCSVButton.Position = [221 508 100 22];
+            app.ExportCSVButton.Text = 'Export CSV';
+
+            % Create AllFluoroSwitchLabel
+            app.AllFluoroSwitchLabel = uilabel(app.AnalysisPanel);
+            app.AllFluoroSwitchLabel.HorizontalAlignment = 'center';
+            app.AllFluoroSwitchLabel.Position = [357 470 56 22];
+            app.AllFluoroSwitchLabel.Text = 'All Fluoro';
+
+            % Create AllFluoroSwitch
+            app.AllFluoroSwitch = uiswitch(app.AnalysisPanel, 'slider');
+            app.AllFluoroSwitch.Position = [362 507 45 20];
+
+            % Show the figure after all components are created
+            app.UIFigureMain.Visible = 'on';
+        end
+    end
+
+    % App creation and deletion
+    methods (Access = public)
+
+        % Construct app
+        function app = ProFileViewer_V3
+
+            % Create UIFigure and components
+            createComponents(app)
+
+            % Register the app with App Designer
+            registerApp(app, app.UIFigureMain)
+
+            % Execute the startup function
+            runStartupFcn(app, @startupFcn)
+
+            if nargout == 0
+                clear app
+            end
+        end
+
+        % Code that executes before app deletion
+        function delete(app)
+
+            % Delete UIFigure when app is deleted
+            delete(app.UIFigureMain)
+        end
+    end
+end
