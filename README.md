@@ -99,6 +99,30 @@ Quantitative Analysis (Trace Analysis)
         Click Export CSV to save your analysis
         The exported file includes metadata and results for all channels
 
+Runoff Quantification (for Haringtonine or other runoff analysis)
+
+    Select Data Source:
+        Choose a file from the workspace dropdown
+        Select the channel to analyze (absorbance, fluorescence)
+
+    Mark Regions:
+        Click the Select Points button
+        Click on the plot to mark boundaries of regions (e.g., monosome, disome, etc.)
+
+    Calculate Area Under Curve:
+        Click the Calculate AUC button
+        Results display both absorbance and available fluorescence data
+        The All Fluoro switch toggles baseline correction for fluorescence
+
+    Adjust Temporal Nomenclature:
+        Adjust runoff time and condition flags
+        Ensure naming convention matches desired output
+
+    Visualize Polysome metrics:
+        Log polsyome peaks and polysome AUC over time
+        See all AUC data and export as desired
+        Note that upcoming 2026-fall software will superceed this functionality. 
+        
 Tips for Multi-Channel Analysis
 
     Absorbance Data (260nm): Measures RNA content, revealing polysome distribution
