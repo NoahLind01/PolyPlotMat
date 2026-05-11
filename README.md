@@ -1,7 +1,7 @@
-## ProFileViewer - Polysome Profiling Data Viewer and Analysis Tool
+## PolyPlotMat - Polysome Profiling Data Viewer and Analysis Tool
 
 ## Overview
-ProFileViewer is a MATLAB application for viewing and analyzing polysome profiling data. This tool provides an interactive interface for examining absorbance and fluorescence data from polysome profiles, with features for data comparison, area under the curve (AUC) measurement, and relative abundance calculations.
+PolyPlotMat is a MATLAB application for viewing and analyzing polysome profiling data. This tool provides an interactive interface for examining absorbance and fluorescence data from polysome profiles, with features for data comparison, area under the curve (AUC) measurement, and relative abundance calculations.
 
 ## Features
 
@@ -51,10 +51,10 @@ ProFileViewer is a MATLAB application for viewing and analyzing polysome profili
 5. View results in the table display
 6. Use **Export CSV** to save analysis results
 
-## ProFileViewer User Guide
+## PolyPlotMat User Guide
 Overview
 
-ProFileViewer is a MATLAB application designed for analyzing polysome profiling data. It allows visualization, comparison, and quantification of both absorbance and fluorescence signals across polysome fractions.
+PolyPlotMat is a MATLAB application designed for analyzing polysome profiling data. It allows visualization, comparison, and quantification of both absorbance and fluorescence signals across polysome fractions.
 Getting Started
 
     Launch the application in MATLAB by running PolyPlotMat.mltbx and running the app directly, or optionally running code contained in PolyPlotMat file. 
