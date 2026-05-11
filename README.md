@@ -51,13 +51,13 @@ ProFileViewer is a MATLAB application for viewing and analyzing polysome profili
 5. View results in the table display
 6. Use **Export CSV** to save analysis results
 
-ProFileViewer User Guide
+## ProFileViewer User Guide
 Overview
 
 ProFileViewer is a MATLAB application designed for analyzing polysome profiling data. It allows visualization, comparison, and quantification of both absorbance and fluorescence signals across polysome fractions.
 Getting Started
 
-    Launch the application in MATLAB by running ProFileViewer_V5
+    Launch the application in MATLAB by running ProFileViewer_V7
     Use the Change Directory button to navigate to your data folder
     Select CSV files containing your polysome profile data
 
